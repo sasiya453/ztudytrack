@@ -180,12 +180,13 @@ async function loadDonut() {
 
   donutChart?.destroy();
   const c = chartColors();
+  const donutBox = $('subjectDonut').closest('.chart-box');
   if (!entries.length) {
     $('donut-legend').innerHTML = '<li class="donut-empty">No per-subject hours logged in the last 30 days yet — split your hours next time you log.</li>';
-    $('subjectDonut').style.display = 'none';
+    donutBox.style.display = 'none';
     return;
   }
-  $('subjectDonut').style.display = 'block';
+  donutBox.style.display = 'block';
   const ctx = $('subjectDonut').getContext('2d');
   donutChart = new Chart(ctx, {
     type: 'doughnut',
