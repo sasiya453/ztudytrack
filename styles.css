@@ -160,9 +160,19 @@ svg { display: block; }
 .chip-toggle:not(.wrap) .chip { border: none; background: none; }
 .chip.active { background: var(--accent-grad); color: #fff; border-color: transparent; }
 
+/* ---------- Chart containers ----------
+   Chart.js with maintainAspectRatio:false sizes the canvas to its parent.
+   Without a locked CSS height here, the panel grows to fit the canvas and
+   the canvas grows again to fit the panel — an infinite feedback loop.
+   Every chart canvas must sit inside one of these fixed-height boxes. */
+.chart-box { position: relative; width: 100%; }
+.chart-box canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+.chart-box-lg { height: 260px; }
+.chart-box-md { height: 200px; }
+.chart-box-donut { width: 160px; height: 160px; flex-shrink: 0; }
+
 /* ---------- Donut legend ---------- */
 .donut-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.donut-wrap canvas { max-width: 160px; max-height: 160px; }
 .donut-legend { list-style: none; flex: 1; min-width: 140px; }
 .donut-legend li { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: .86rem; }
 .donut-legend .sw { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
