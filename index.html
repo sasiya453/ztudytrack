@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A/L Study Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+</head>
+<body>
+
+  <!-- ===================== LOGIN ===================== -->
+  <section id="login-view" class="login-view">
+    <div class="login-card">
+      <div class="login-logo">📚</div>
+      <h1>A/L Study Tracker</h1>
+      <p>Combined Maths / Bio · Physics · Chemistry<br/>Track hours, past papers &amp; model-paper marks.</p>
+      <div class="widget-slot">
+        <script async src="https://telegram.org/js/telegram-widget.js?22"
+                data-telegram-login="YOUR_BOT_USERNAME"
+                data-size="large"
+                data-userpic="true"
+                data-auth-url="https://YOUR-WORKER.workers.dev/api/telegram-auth"
+                data-request-access="write"></script>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== APP ===================== -->
+  <main id="app-view" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">📚 <span>A/L Study Tracker</span></div>
+      <div class="topbar-right">
+        <div class="user-chip">
+          <img id="user-avatar" alt="" />
+          <span id="user-name"></span>
+        </div>
+        <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+        <button id="btn-logout" class="ghost-btn">Log out</button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="papers">Past Papers</button>
+    </nav>
+
+    <!-- ===== Dashboard tab ===== -->
+    <section id="tab-dashboard" class="page">
+      <div class="stats-grid">
+        <div class="stat-card"><span class="stat-label">Today</span><span class="stat-value" id="stat-today">0<span class="unit">h</span></span></div>
+        <div class="stat-card"><span class="stat-label">Last 7 days</span><span class="stat-value" id="stat-week">0<span class="unit">h</span></span></div>
+        <div class="stat-card"><span class="stat-label">Papers Done</span><span class="stat-value" id="stat-papers">0</span></div>
+        <div class="stat-card"><span class="stat-label">Streak</span><span class="stat-value" id="stat-streak">0<span class="unit">🔥</span></span></div>
+      </div>
+
+      <div class="panel chart-panel">
+        <h2>Study Growth — last 14 days</h2>
+        <canvas id="growthChart" height="110"></canvas>
+      </div>
+
+      <div class="panel leaderboard-panel">
+        <h2>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+            <path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+          </svg>
+          Yesterday's Leaderboard
+        </h2>
+        <ul id="leaderboard-list" class="leaderboard-list"></ul>
+      </div>
+    </section>
+
+    <!-- ===== Past papers tab ===== -->
+    <section id="tab-papers" class="page" hidden>
+      <div id="subject-tabs" class="subject-tabs"></div>
+      <p class="hint">Tap a year to cycle its status → <span class="dot st-not-done"></span> Not done · <span class="dot st-first"></span> 1st time · <span class="dot st-second"></span> 2nd time+</p>
+      <div id="paper-grid" class="paper-grid"></div>
+    </section>
+
+    <!-- ===== Settings modal ===== -->
+    <div id="settings-modal" class="modal-backdrop" hidden>
+      <div class="modal">
+        <h2>Settings</h2>
+        <label class="field">Stream
+          <select id="set-stream">
+            <option value="Maths">Combined Maths</option>
+            <option value="Bio">Bio</option>
+          </select>
+        </label>
+        <label class="field">Combined Maths / Bio paper class day
+          <select id="set-maths"></select>
+        </label>
+        <label class="field">Physics paper class day
+          <select id="set-physics"></select>
+        </label>
+        <label class="field">Chemistry paper class day
+          <select id="set-chemistry"></select>
+        </label>
+        <div class="modal-actions">
+          <button id="settings-cancel" class="ghost-btn">Cancel</button>
+          <button id="settings-save" class="primary-btn">Save</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
