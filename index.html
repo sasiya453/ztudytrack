@@ -92,14 +92,14 @@
             <button class="chip" data-range="30">30D</button>
           </div>
         </div>
-        <canvas id="growthChart" height="110"></canvas>
+        <div class="chart-box chart-box-lg"><canvas id="growthChart"></canvas></div>
       </div>
 
       <div class="two-col">
         <div class="panel">
           <h2>Time by subject <small class="muted-sm" id="donut-range-label">— last 30 days</small></h2>
           <div class="donut-wrap">
-            <canvas id="subjectDonut" height="180"></canvas>
+            <div class="chart-box chart-box-donut"><canvas id="subjectDonut"></canvas></div>
             <ul id="donut-legend" class="donut-legend"></ul>
           </div>
         </div>
@@ -121,7 +121,7 @@
           <h2>Model paper marks</h2>
           <div id="marks-subject-tabs" class="chip-toggle"></div>
         </div>
-        <canvas id="marksChart" height="90"></canvas>
+        <div class="chart-box chart-box-md"><canvas id="marksChart"></canvas></div>
         <div id="marks-edit-list" class="marks-edit-list"></div>
       </div>
 
