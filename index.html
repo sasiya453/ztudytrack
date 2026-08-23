@@ -1,113 +1,208 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>A/L Study Tracker</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light dark" />
+<title>A/L Study Tracker</title>
+<link rel="stylesheet" href="styles.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 </head>
 <body>
 
   <!-- ===================== LOGIN ===================== -->
   <section id="login-view" class="login-view">
+    <div class="login-orb"></div>
     <div class="login-card">
-      <div class="login-logo">📚</div>
+      <div class="login-logo">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="white"><path d="M21.5 4.5 2.7 11.9c-1.2.5-1.2 1.2-.2 1.5l4.8 1.5 1.8 5.6c.2.6.4.9.9.9.5 0 .7-.2 1-.5l2.4-2.3 4.9 3.6c.9.5 1.6.2 1.8-.8l3.3-15.6c.3-1.3-.5-1.9-1.9-1.3zM8.7 14.6l9-5.7c.4-.3.8.1.4.4l-7.6 6.9-.3 3.2-1.5-4.8z"/></svg>
+      </div>
       <h1>A/L Study Tracker</h1>
-      <p>Combined Maths / Bio · Physics · Chemistry<br/>Track hours, past papers &amp; model-paper marks.</p>
+      <p>Combined Maths / Bio · Physics · Chemistry<br/>Hours, past papers &amp; model marks — in one place.</p>
       <div class="widget-slot">
         <script async src="https://telegram.org/js/telegram-widget.js?22"
-                data-telegram-login="Ztudytrackbot"
+                data-telegram-login="YOUR_BOT_USERNAME"
                 data-size="large"
+                data-radius="12"
                 data-userpic="true"
-                data-auth-url="https://studydash.sazindux.workers.dev/api/telegram-auth"
+                data-auth-url="https://YOUR-WORKER.workers.dev/api/telegram-auth"
                 data-request-access="write"></script>
       </div>
+      <button id="theme-toggle-login" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
+        <svg class="ic-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="ic-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
     </div>
   </section>
 
   <!-- ===================== APP ===================== -->
   <main id="app-view" class="app" hidden>
     <header class="topbar">
-      <div class="brand">📚 <span>A/L Study Tracker</span></div>
+      <div class="brand">
+        <span class="brand-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M21.5 4.5 2.7 11.9c-1.2.5-1.2 1.2-.2 1.5l4.8 1.5 1.8 5.6c.2.6.4.9.9.9.5 0 .7-.2 1-.5l2.4-2.3 4.9 3.6c.9.5 1.6.2 1.8-.8l3.3-15.6c.3-1.3-.5-1.9-1.9-1.3zM8.7 14.6l9-5.7c.4-.3.8.1.4.4l-7.6 6.9-.3 3.2-1.5-4.8z"/></svg></span>
+        <span>Study Tracker</span>
+      </div>
       <div class="topbar-right">
-        <div class="user-chip">
+        <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
+          <svg class="ic-sun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          <svg class="ic-moon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        </button>
+        <button id="btn-settings" class="user-chip" title="Open settings">
           <img id="user-avatar" alt="" />
           <span id="user-name"></span>
-        </div>
-        <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg>
         </button>
-        <button id="btn-logout" class="ghost-btn">Log out</button>
       </div>
     </header>
 
-    <!-- Tabs -->
-    <nav class="tabs">
-      <button class="tab active" data-tab="dashboard">Dashboard</button>
-      <button class="tab" data-tab="papers">Past Papers</button>
+    <!-- Segmented tabs -->
+    <nav class="segmented">
+      <button class="seg active" data-tab="dashboard">Overview</button>
+      <button class="seg" data-tab="papers">Past Papers</button>
+      <button class="seg" data-tab="leaderboard">Leaderboard</button>
     </nav>
 
-    <!-- ===== Dashboard tab ===== -->
+    <!-- ===== Overview tab ===== -->
     <section id="tab-dashboard" class="page">
       <div class="stats-grid">
-        <div class="stat-card"><span class="stat-label">Today</span><span class="stat-value" id="stat-today">0<span class="unit">h</span></span></div>
-        <div class="stat-card"><span class="stat-label">Last 7 days</span><span class="stat-value" id="stat-week">0<span class="unit">h</span></span></div>
-        <div class="stat-card"><span class="stat-label">Papers Done</span><span class="stat-value" id="stat-papers">0</span></div>
-        <div class="stat-card"><span class="stat-label">Streak</span><span class="stat-value" id="stat-streak">0<span class="unit">🔥</span></span></div>
+        <div class="stat-card grad-a">
+          <span class="stat-label">Today</span>
+          <span class="stat-value" id="stat-today">0<span class="unit">h</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Last 7 days</span>
+          <span class="stat-value" id="stat-week">0<span class="unit">h</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Daily average</span>
+          <span class="stat-value" id="stat-avg">0<span class="unit">h</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Streak</span>
+          <span class="stat-value" id="stat-streak">0<span class="unit">🔥</span></span>
+        </div>
       </div>
 
-      <div class="panel chart-panel">
-        <h2>Study Growth — last 14 days</h2>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Study growth</h2>
+          <div class="chip-toggle" id="range-toggle">
+            <button class="chip active" data-range="14">14D</button>
+            <button class="chip" data-range="30">30D</button>
+          </div>
+        </div>
         <canvas id="growthChart" height="110"></canvas>
       </div>
 
-      <div class="panel leaderboard-panel">
-        <h2>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
-            <path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
-            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
-          </svg>
-          Yesterday's Leaderboard
-        </h2>
-        <ul id="leaderboard-list" class="leaderboard-list"></ul>
+      <div class="two-col">
+        <div class="panel">
+          <h2>Time by subject <small class="muted-sm" id="donut-range-label">— last 30 days</small></h2>
+          <div class="donut-wrap">
+            <canvas id="subjectDonut" height="180"></canvas>
+            <ul id="donut-legend" class="donut-legend"></ul>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Consistency</h2>
+          <div id="heatmap" class="heatmap"></div>
+          <div class="heatmap-scale">
+            <span>Less</span>
+            <span class="hm-swatch l0"></span><span class="hm-swatch l1"></span>
+            <span class="hm-swatch l2"></span><span class="hm-swatch l3"></span><span class="hm-swatch l4"></span>
+            <span>More</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Model paper marks</h2>
+          <div id="marks-subject-tabs" class="chip-toggle"></div>
+        </div>
+        <canvas id="marksChart" height="90"></canvas>
+        <div id="marks-edit-list" class="marks-edit-list"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Recent activity</h2>
+        <div id="log-feed" class="log-feed"></div>
       </div>
     </section>
 
     <!-- ===== Past papers tab ===== -->
     <section id="tab-papers" class="page" hidden>
-      <div id="subject-tabs" class="subject-tabs"></div>
-      <p class="hint">Tap a year to cycle its status → <span class="dot st-not-done"></span> Not done · <span class="dot st-first"></span> 1st time · <span class="dot st-second"></span> 2nd time+</p>
+      <div id="subject-tabs" class="chip-toggle wrap"></div>
+      <div class="panel progress-panel">
+        <div class="progress-row">
+          <span id="progress-label" class="muted-sm">0 / 26 papers done</span>
+          <span id="progress-pct" class="muted-sm">0%</span>
+        </div>
+        <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+      </div>
+      <p class="hint"><span class="dot st-not-done"></span> Not done &nbsp; <span class="dot st-first"></span> 1st attempt &nbsp; <span class="dot st-second"></span> 2nd+ attempt &nbsp;·&nbsp; tap a year to cycle</p>
       <div id="paper-grid" class="paper-grid"></div>
     </section>
 
-    <!-- ===== Settings modal ===== -->
-    <div id="settings-modal" class="modal-backdrop" hidden>
-      <div class="modal">
-        <h2>Settings</h2>
-        <label class="field">Stream
-          <select id="set-stream">
-            <option value="Maths">Combined Maths</option>
-            <option value="Bio">Bio</option>
-          </select>
-        </label>
-        <label class="field">Combined Maths / Bio paper class day
-          <select id="set-maths"></select>
-        </label>
-        <label class="field">Physics paper class day
-          <select id="set-physics"></select>
-        </label>
-        <label class="field">Chemistry paper class day
-          <select id="set-chemistry"></select>
-        </label>
-        <div class="modal-actions">
-          <button id="settings-cancel" class="ghost-btn">Cancel</button>
-          <button id="settings-save" class="primary-btn">Save</button>
+    <!-- ===== Leaderboard tab ===== -->
+    <section id="tab-leaderboard" class="page" hidden>
+      <div class="chip-toggle" id="lb-toggle">
+        <button class="chip active" data-period="yesterday">Yesterday</button>
+        <button class="chip" data-period="week">This week</button>
+        <button class="chip" data-period="month">This month</button>
+      </div>
+      <div class="panel">
+        <ul id="leaderboard-list" class="leaderboard-list"></ul>
+      </div>
+    </section>
+
+    <!-- Floating quick-log button -->
+    <button id="fab-log" class="fab" aria-label="Log study hours" title="Log study hours">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+
+    <!-- ===== Quick-log bottom sheet ===== -->
+    <div id="log-sheet" class="sheet-backdrop" hidden>
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h2 id="log-sheet-title">Log study hours</h2>
+        <p class="muted-sm" id="log-sheet-date"></p>
+
+        <div class="stepper">
+          <button id="log-minus" class="stepper-btn" aria-label="Decrease">−</button>
+          <div class="stepper-value"><span id="log-hours-display">0</span><small>hours</small></div>
+          <button id="log-plus" class="stepper-btn" aria-label="Increase">+</button>
         </div>
+
+        <p class="muted-sm section-label">Split by subject (optional)</p>
+        <div id="log-subject-rows" class="subject-rows"></div>
+
+        <div class="sheet-actions">
+          <button id="log-delete" class="ghost-btn danger-btn" hidden>Delete entry</button>
+          <button id="log-cancel" class="ghost-btn">Cancel</button>
+          <button id="log-save" class="primary-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Settings slide-over ===== -->
+    <div id="settings-backdrop" class="sheet-backdrop side" hidden>
+      <div class="side-panel">
+        <div class="side-head">
+          <h2>Settings</h2>
+          <button id="settings-close" class="icon-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+
+        <p class="section-label">Stream</p>
+        <div class="chip-toggle" id="set-stream-toggle">
+          <button class="chip" data-stream="Maths">Combined Maths</button>
+          <button class="chip" data-stream="Bio">Bio</button>
+        </div>
+
+        <div id="class-day-pickers"></div>
+
+        <button id="btn-logout" class="ghost-btn danger-btn full-width">Log out</button>
       </div>
     </div>
   </main>
