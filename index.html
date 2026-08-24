@@ -87,9 +87,16 @@
       <div class="panel">
         <div class="panel-head">
           <h2>Study growth</h2>
-          <div class="chip-toggle" id="range-toggle">
-            <button class="chip active" data-range="14">14D</button>
-            <button class="chip" data-range="30">30D</button>
+          <div class="growth-controls">
+            <div class="chip-toggle" id="range-toggle">
+              <button class="chip active" data-range="14">14D</button>
+              <button class="chip" data-range="30">30D</button>
+              <button class="chip" data-range="all">All time</button>
+            </div>
+            <div class="chip-toggle" id="chart-type-toggle">
+              <button class="chip active" data-type="bar">Bar</button>
+              <button class="chip" data-type="cumulative">Cumulative</button>
+            </div>
           </div>
         </div>
         <div class="chart-box chart-box-lg"><canvas id="growthChart"></canvas></div>
@@ -119,10 +126,21 @@
       <div class="panel">
         <div class="panel-head">
           <h2>Model paper marks</h2>
-          <div id="marks-subject-tabs" class="chip-toggle"></div>
+          <div class="marks-head-actions">
+            <div id="marks-subject-tabs" class="chip-toggle"></div>
+            <button id="btn-add-marks" class="icon-btn" title="Add marks">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
         </div>
         <div class="chart-box chart-box-md"><canvas id="marksChart"></canvas></div>
-        <div id="marks-edit-list" class="marks-edit-list"></div>
+        <div class="grade-legend">
+          <span><i class="gl-dot" style="background:#3FC65A"></i>A ≥75</span>
+          <span><i class="gl-dot" style="background:#2AABEE"></i>B 65–74</span>
+          <span><i class="gl-dot" style="background:#F5A623"></i>C 55–64</span>
+          <span><i class="gl-dot" style="background:#F5A623;opacity:.55"></i>S 35–54</span>
+          <span><i class="gl-dot" style="background:#E5473C"></i>W &lt;35</span>
+        </div>
       </div>
 
       <div class="panel">
@@ -141,7 +159,7 @@
         </div>
         <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
       </div>
-      <p class="hint"><span class="dot st-not-done"></span> Not done &nbsp; <span class="dot st-first"></span> 1st attempt &nbsp; <span class="dot st-second"></span> 2nd+ attempt &nbsp;·&nbsp; tap a year to cycle</p>
+      <p class="hint"><span class="hint-dot filled"></span> Completed round &nbsp; <span class="hint-dot"></span> Not yet &nbsp;·&nbsp; tap a dot to set rounds completed</p>
       <div id="paper-grid" class="paper-grid"></div>
     </section>
 
@@ -205,9 +223,50 @@
         <button id="btn-logout" class="ghost-btn danger-btn full-width">Log out</button>
       </div>
     </div>
+
+    <!-- ===== Marks entry sheet (Single / Bulk) ===== -->
+    <div id="marks-sheet" class="sheet-backdrop" hidden>
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h2>Add marks <small class="muted-sm" id="marks-sheet-subject"></small></h2>
+
+        <div class="tab-row">
+          <button class="tab-btn active" id="marks-tab-single" data-tab="single">Single Entry</button>
+          <button class="tab-btn" id="marks-tab-bulk" data-tab="bulk">Bulk Add</button>
+        </div>
+
+        <!-- Single entry -->
+        <div id="marks-form-single" class="entry-form">
+          <div class="form-row">
+            <label class="field-label">Week number
+              <input type="number" id="single-week" min="1" max="53" />
+            </label>
+            <label class="field-label">Marks
+              <input type="number" id="single-marks" min="0" max="100" step="0.5" placeholder="e.g. 68" />
+            </label>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="single-absent" />
+            Mark as absent instead
+          </label>
+        </div>
+
+        <!-- Bulk add -->
+        <div id="marks-form-bulk" class="entry-form" hidden>
+          <div class="bulk-entry" id="bulk-rows"></div>
+          <button id="bulk-add-row" class="add-row-btn">＋ Add row</button>
+        </div>
+
+        <div class="sheet-actions">
+          <button id="marks-cancel" class="ghost-btn">Cancel</button>
+          <button id="marks-save" class="primary-btn">Save</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <div id="toast" class="toast" hidden></div>
   <script src="app.js"></script>
 </body>
 </html>
+
