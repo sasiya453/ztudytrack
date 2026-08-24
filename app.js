@@ -15,21 +15,17 @@ const SUBJECT_COLORS = {
   'Physics':        '#F5A623',
   'Chemistry':      '#9B6BFF',
 };
-const STATUS_CYCLE = [
-  { status: 'not done',  attempt: 0, label: '' },
-  { status: '1st time',  attempt: 1, label: '1st' },
-  { status: '2nd time+', attempt: 2, label: '2nd+' },
-];
-const STATUS_CLASS = { 'not done': 'st-not-done', '1st time': 'st-first', '2nd time+': 'st-second' };
 const SETTINGS_COLUMNS = {
   'Combined Maths': 'maths_class_day', 'Bio': 'maths_class_day',
   'Physics': 'physics_class_day', 'Chemistry': 'chemistry_class_day',
 };
 
 let db = null, me = null, settings = null;
-let activePaperSubject = null, activeMarksSubject = null, activeLbPeriod = 'yesterday', activeRange = 14;
+let activePaperSubject = null, activeMarksSubject = null, activeLbPeriod = 'yesterday';
+let activeRange = 14, activeChartType = 'bar';
 let growthChart = null, donutChart = null, marksChart = null;
 let editingDate = null, logHours = 0;
+let marksActiveTab = 'single', marksEntrySubject = null;
 
 const $ = id => document.getElementById(id);
 const sltDate = (d = new Date()) => new Date(d.getTime() + SLT_OFFSET).toISOString().slice(0, 10);
@@ -110,32 +106,55 @@ async function loadStats() {
     .gte('session_date', from).order('session_date');
 
   const byDate = new Map((sessions || []).map(r => [r.session_date, +r.study_hours]));
-  const N = activeRange;
-  const labels = [], values = [];
-  for (let i = N - 1; i >= 0; i--) {
-    const d = sltDate(new Date(Date.now() - i * DAY_MS));
-    labels.push(d.slice(5));
-    values.push(byDate.get(d) || 0);
-  }
-  const cumulative = []; let run = 0;
-  for (const v of values) { run += v; cumulative.push(+run.toFixed(1)); }
+  const values30 = [];
+  for (let i = 29; i >= 0; i--) values30.push(byDate.get(sltDate(new Date(Date.now() - i * DAY_MS))) || 0);
 
-  const today = values[values.length - 1];
-  const last7 = values.slice(-7).reduce((a, b) => a + b, 0);
+  const today = values30[29];
+  const last7 = values30.slice(-7).reduce((a, b) => a + b, 0);
   $('stat-today').innerHTML = `${today}<span class="unit">h</span>`;
   $('stat-week').innerHTML  = `${last7.toFixed(1)}<span class="unit">h</span>`;
   $('stat-avg').innerHTML   = `${(last7 / 7).toFixed(1)}<span class="unit">h</span>`;
 
   // streak: consecutive days with hours > 0, counting back from today (or yesterday if today unlogged)
-  const dOrder = [];
-  for (let i = 0; i <= 29; i++) dOrder.push(byDate.get(sltDate(new Date(Date.now() - i * DAY_MS))) || 0);
+  const dOrder = [...values30].reverse(); // index 0 = today
   let start = 0;
   if (dOrder[0] === 0 && dOrder[1] === 0) start = 1;
   let streak = 0;
   for (let i = start; i < dOrder.length && dOrder[i] > 0; i++) streak++;
   $('stat-streak').innerHTML = `${streak}<span class="unit">🔥</span>`;
 
-  renderGrowthChart(labels, values, cumulative);
+  await updateGrowthChart();
+}
+
+async function updateGrowthChart() {
+  let days;
+  if (activeRange === 'all') {
+    const { data: earliest } = await db.from('study_sessions')
+      .select('session_date').eq('subject', 'Total').order('session_date', { ascending: true }).limit(1);
+    if (earliest?.length) {
+      const earliestDate = new Date(`${earliest[0].session_date}T00:00:00Z`);
+      const todayDate = new Date(`${sltDate()}T00:00:00Z`);
+      days = Math.min(365, Math.round((todayDate - earliestDate) / DAY_MS) + 1);
+    } else days = 14;
+  } else {
+    days = activeRange;
+  }
+
+  const from = sltDate(new Date(Date.now() - (days - 1) * DAY_MS));
+  const { data } = await db.from('study_sessions')
+    .select('session_date, study_hours').eq('subject', 'Total').gte('session_date', from).order('session_date');
+  const byDate = new Map((data || []).map(r => [r.session_date, +r.study_hours]));
+
+  const labels = [], daily = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = sltDate(new Date(Date.now() - i * DAY_MS));
+    labels.push(d.slice(5));
+    daily.push(byDate.get(d) || 0);
+  }
+  const cumulative = []; let run = 0;
+  for (const v of daily) { run += v; cumulative.push(+run.toFixed(1)); }
+
+  renderGrowthChart(labels, daily, cumulative);
 }
 
 function chartColors() {
@@ -147,22 +166,26 @@ function renderGrowthChart(labels, daily, cumulative) {
   growthChart?.destroy();
   const ctx = $('growthChart').getContext('2d');
   const c = chartColors();
-  const grad = ctx.createLinearGradient(0, 0, 0, 240);
-  grad.addColorStop(0, 'rgba(42,171,238,.28)'); grad.addColorStop(1, 'rgba(42,171,238,0)');
+  let dataset;
+
+  if (activeChartType === 'bar') {
+    dataset = { type: 'bar', label: 'Hours / day', data: daily, backgroundColor: '#2AABEE', borderRadius: 6, maxBarThickness: 22 };
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, 0, 240);
+    grad.addColorStop(0, 'rgba(63,198,90,.28)'); grad.addColorStop(1, 'rgba(63,198,90,0)');
+    dataset = { type: 'line', label: 'Cumulative hours', data: cumulative, borderColor: '#3FC65A',
+      backgroundColor: grad, fill: true, tension: .35, pointRadius: labels.length > 40 ? 0 : 3 };
+  }
+
   growthChart = new Chart(ctx, {
-    data: { labels, datasets: [
-      { type: 'bar', label: 'Hours / day', data: daily, backgroundColor: '#2AABEE', borderRadius: 6, yAxisID: 'y', maxBarThickness: 22 },
-      { type: 'line', label: 'Cumulative (h)', data: cumulative, borderColor: '#3FC65A',
-        backgroundColor: grad, fill: true, tension: .35, pointRadius: 0, yAxisID: 'y1' },
-    ]},
+    data: { labels, datasets: [dataset] },
     options: {
       responsive: true, maintainAspectRatio: false,
       scales: {
-        x: { ticks: { color: c.text }, grid: { display: false } },
-        y:  { beginAtZero: true, ticks: { color: c.text }, grid: { color: c.grid } },
-        y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: c.text } },
+        x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: c.text }, grid: { color: c.grid } },
       },
-      plugins: { legend: { position: 'bottom', labels: { color: c.text } } },
+      plugins: { legend: { display: false } },
     },
   });
 }
@@ -354,12 +377,12 @@ async function renderMarksPanel() {
     .gte('week_number', fromWeek).lte('week_number', currentWeek).order('week_number');
   const byWeek = new Map((data || []).map(r => [r.week_number, r]));
 
-  // chart: only weeks with real marks
   const chartLabels = [], chartData = [];
   for (let w = fromWeek; w <= currentWeek; w++) {
     const r = byWeek.get(w);
     if (r && !r.is_absent && r.marks !== null) { chartLabels.push(`W${w}`); chartData.push(+r.marks); }
   }
+
   marksChart?.destroy();
   const c = chartColors();
   const ctx = $('marksChart').getContext('2d');
@@ -372,59 +395,110 @@ async function renderMarksPanel() {
       scales: { x: { ticks: { color: c.text }, grid: { display: false } },
                 y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid } } },
       plugins: { legend: { display: false } },
+      layout: { padding: { right: 18 } },
     },
-  });
-
-  // editable list, most recent week first
-  let lastMarks = null;
-  const rowsHtml = [];
-  for (let w = currentWeek; w >= fromWeek; w--) {
-    const r = byWeek.get(w);
-    const marks = r && !r.is_absent && r.marks !== null ? +r.marks : '';
-    const isAbsent = !!(r && r.is_absent);
-    rowsHtml.push({ w, marks, isAbsent });
-  }
-  // compute diff vs previous *entered* week, walking chronologically
-  const diffByWeek = {};
-  let prev = null;
-  for (let w = fromWeek; w <= currentWeek; w++) {
-    const r = byWeek.get(w);
-    if (r && !r.is_absent && r.marks !== null) {
-      if (prev !== null) diffByWeek[w] = +r.marks - prev;
-      prev = +r.marks;
-    }
-  }
-
-  $('marks-edit-list').innerHTML = rowsHtml.map(({ w, marks, isAbsent }) => {
-    const diff = diffByWeek[w];
-    const diffHtml = diff === undefined ? '' :
-      `<span class="mr-diff ${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${diff > 0 ? '+' : ''}${diff.toFixed(1)}</span>`;
-    return `<div class="marks-row" data-week="${w}">
-      <span class="mr-week">Week ${w}</span>
-      <input type="number" min="0" max="100" step="0.5" value="${marks}" ${isAbsent ? 'disabled' : ''} placeholder="—" />
-      ${diffHtml}
-      <button class="mr-absent-chip ${isAbsent ? 'active' : ''}" data-week="${w}">Absent</button>
-    </div>`;
-  }).join('');
-
-  $('marks-edit-list').querySelectorAll('input').forEach(inp => {
-    inp.onchange = () => saveMarks(subject, +inp.closest('.marks-row').dataset.week, parseFloat(inp.value), false);
-  });
-  $('marks-edit-list').querySelectorAll('.mr-absent-chip').forEach(btn => {
-    btn.onclick = () => {
-      const nowAbsent = !btn.classList.contains('active');
-      saveMarks(subject, +btn.dataset.week, null, nowAbsent);
-    };
+    plugins: [gradeBandsPlugin],
   });
 }
+
+/** A/L grading bands drawn behind the marks line: A 75+, B 65-74, C 55-64, S 35-54, W <35 */
+const gradeBandsPlugin = {
+  id: 'gradeBands',
+  beforeDraw(chart) {
+    const { ctx, chartArea, scales: { y } } = chart;
+    if (!chartArea) return;
+    const bands = [
+      { from: 75, to: 100, color: 'rgba(63,198,90,.10)',  label: 'A', labelColor: '#3FC65A' },
+      { from: 65, to: 75,  color: 'rgba(42,171,238,.10)', label: 'B', labelColor: '#2AABEE' },
+      { from: 55, to: 65,  color: 'rgba(245,166,35,.12)', label: 'C', labelColor: '#F5A623' },
+      { from: 35, to: 55,  color: 'rgba(245,166,35,.06)', label: 'S', labelColor: '#F5A623' },
+      { from: 0,  to: 35,  color: 'rgba(229,71,60,.10)',  label: 'W', labelColor: '#E5473C' },
+    ];
+    ctx.save();
+    bands.forEach(b => {
+      const yTop = y.getPixelForValue(b.to), yBottom = y.getPixelForValue(b.from);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(chartArea.left, yTop, chartArea.right - chartArea.left, yBottom - yTop);
+      ctx.fillStyle = b.labelColor;
+      ctx.font = '700 10px -apple-system, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(b.label, chartArea.right + 3, yTop + 10);
+    });
+    ctx.restore();
+  },
+};
 
 async function saveMarks(subject, week, marks, isAbsent) {
   const body = { user_id: me.telegram_id, subject, week_number: week,
     marks: isAbsent ? null : (isNaN(marks) ? null : marks), is_absent: isAbsent };
   const { error } = await db.from('model_papers').upsert(body, { onConflict: 'user_id,subject,week_number' });
-  if (error) { toast('Update failed 😕'); return; }
+  if (error) { toast('Update failed 😕'); return false; }
+  return true;
+}
+
+/* ---------------- Marks entry sheet (Single / Bulk) ---------------- */
+
+function openMarksSheet() {
+  marksEntrySubject = activeMarksSubject;
+  $('marks-sheet-subject').textContent = `— ${marksEntrySubject}`;
+  $('single-week').value = sltWeekNumber();
+  $('single-marks').value = '';
+  $('single-absent').checked = false;
+  resetBulkRows();
+  switchMarksTab('single');
+  $('marks-sheet').hidden = false;
+}
+function closeMarksSheet() { $('marks-sheet').hidden = true; }
+
+function switchMarksTab(tab) {
+  marksActiveTab = tab;
+  $('marks-tab-single').classList.toggle('active', tab === 'single');
+  $('marks-tab-bulk').classList.toggle('active', tab === 'bulk');
+  $('marks-form-single').hidden = tab !== 'single';
+  $('marks-form-bulk').hidden = tab !== 'bulk';
+}
+
+function bulkRowHtml() {
+  return `<div class="bulk-row">
+    <div class="bulk-cell"><input type="number" min="1" max="53" placeholder="Week" class="b-week" /></div>
+    <div class="bulk-cell"><input type="number" min="0" max="100" step="0.5" placeholder="Marks" class="b-marks" /></div>
+    <button class="bulk-del" type="button">×</button>
+  </div>`;
+}
+function resetBulkRows() {
+  $('bulk-rows').innerHTML = bulkRowHtml() + bulkRowHtml() + bulkRowHtml();
+  wireBulkDeletes();
+}
+function addBulkRow() {
+  $('bulk-rows').insertAdjacentHTML('beforeend', bulkRowHtml());
+  wireBulkDeletes();
+}
+function wireBulkDeletes() {
+  $('bulk-rows').querySelectorAll('.bulk-del').forEach(btn => btn.onclick = () => {
+    if ($('bulk-rows').querySelectorAll('.bulk-row').length > 1) btn.closest('.bulk-row').remove();
+  });
+}
+
+async function saveMarksEntry() {
+  if (marksActiveTab === 'single') {
+    const week = +$('single-week').value;
+    const isAbsent = $('single-absent').checked;
+    const marks = parseFloat($('single-marks').value);
+    if (!week || week < 1 || week > 53) return toast('Enter a valid week number');
+    if (!isAbsent && (isNaN(marks) || marks < 0 || marks > 100)) return toast('Enter marks between 0 and 100');
+    const ok = await saveMarks(marksEntrySubject, week, marks, isAbsent);
+    if (!ok) return;
+  } else {
+    const rows = [...$('bulk-rows').querySelectorAll('.bulk-row')]
+      .map(r => ({ week: +r.querySelector('.b-week').value, marks: parseFloat(r.querySelector('.b-marks').value) }))
+      .filter(r => r.week >= 1 && r.week <= 53 && !isNaN(r.marks) && r.marks >= 0 && r.marks <= 100);
+    if (!rows.length) return toast('Add at least one valid week + marks row');
+    const results = await Promise.all(rows.map(r => saveMarks(marksEntrySubject, r.week, r.marks, false)));
+    if (results.some(r => !r)) return;
+  }
+  closeMarksSheet();
   toast('Marks saved ✅');
-  renderMarksPanel();
+  if (marksEntrySubject === activeMarksSubject) renderMarksPanel();
 }
 
 /* ================= Past paper grid ================= */
@@ -445,9 +519,9 @@ async function renderPaperGrid() {
   const currentYear = Math.min(new Date().getFullYear(), 2025);
   const totalYears = currentYear - 2000 + 1;
   const { data: papers } = await db.from('past_papers')
-    .select('year, status').eq('subject', activePaperSubject);
-  const byYear = new Map((papers || []).map(p => [p.year, p]));
-  const doneCount = [...byYear.values()].filter(p => p.status !== 'not done').length;
+    .select('year, attempt_number').eq('subject', activePaperSubject);
+  const byYear = new Map((papers || []).map(p => [p.year, p.attempt_number || 0]));
+  const doneCount = [...byYear.values()].filter(n => n > 0).length;
 
   $('progress-label').textContent = `${doneCount} / ${totalYears} papers done`;
   $('progress-pct').textContent = `${Math.round((doneCount / totalYears) * 100)}%`;
@@ -455,28 +529,44 @@ async function renderPaperGrid() {
 
   let html = '';
   for (let y = currentYear; y >= 2000; y--) {
-    const st = byYear.get(y)?.status || 'not done';
-    const idx = STATUS_CYCLE.findIndex(c => c.status === st);
-    html += `<div class="paper-cell ${STATUS_CLASS[st]}" data-year="${y}" title="${st}">${y}<small>${STATUS_CYCLE[idx].label}</small></div>`;
+    const rounds = byYear.get(y) || 0;
+    html += paperCardHtml(y, rounds);
   }
   $('paper-grid').innerHTML = html;
 }
 
-async function cyclePaper(cell) {
-  const year = +cell.dataset.year;
-  const current = cell.querySelector('small').textContent;
-  const idx = STATUS_CYCLE.findIndex(c => c.label === current);
-  const next = STATUS_CYCLE[(idx + 1) % 3];
+function paperCardHtml(year, rounds) {
+  const dots = Array.from({ length: 5 }, (_, i) =>
+    `<button class="pc-dot ${i < rounds ? 'filled' : ''}" data-year="${year}" data-index="${i}" aria-label="Round ${i + 1}"></button>`
+  ).join('');
+  return `<div class="paper-card ${rounds >= 5 ? 'pc-complete' : ''}" data-year="${year}">
+    <div class="pc-year">${year}</div>
+    <div class="pc-dots">${dots}</div>
+  </div>`;
+}
 
-  cell.className = `paper-cell ${STATUS_CLASS[next.status]}`;
-  cell.querySelector('small').textContent = next.label;
+async function setPaperRounds(year, rounds) {
+  const card = $('paper-grid').querySelector(`.paper-card[data-year="${year}"]`);
+  if (card) {
+    card.classList.toggle('pc-complete', rounds >= 5);
+    card.querySelectorAll('.pc-dot').forEach((dot, i) => dot.classList.toggle('filled', i < rounds));
+  }
 
+  const status = rounds === 0 ? 'not done' : rounds === 1 ? '1st time' : '2nd time+';
   const { error } = await db.from('past_papers').upsert({
     user_id: me.telegram_id, subject: activePaperSubject, year,
-    status: next.status, attempt_number: next.attempt,
+    attempt_number: rounds, status,
   }, { onConflict: 'user_id,subject,year' });
   if (error) { toast('Update failed 😕'); renderPaperGrid(); return; }
-  renderPaperGrid();
+  renderPaperGrid(); // refresh progress bar counts
+}
+
+function handlePaperDotClick(dot) {
+  const year = +dot.dataset.year;
+  const index = +dot.dataset.index; // 0-based
+  const currentlyFilled = dot.closest('.paper-card').querySelectorAll('.pc-dot.filled').length;
+  const next = currentlyFilled === index + 1 ? index : index + 1; // click last filled dot again -> undo one
+  setPaperRounds(year, next);
 }
 
 /* ================= Leaderboard ================= */
@@ -564,14 +654,20 @@ function bindUI() {
   });
 
   $('paper-grid').addEventListener('click', e => {
-    const cell = e.target.closest('.paper-cell');
-    if (cell) cyclePaper(cell);
+    const dot = e.target.closest('.pc-dot');
+    if (dot) handlePaperDotClick(dot);
   });
 
   $('range-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
-    activeRange = +b.dataset.range;
+    activeRange = b.dataset.range === 'all' ? 'all' : +b.dataset.range;
     $('range-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
-    loadStats();
+    updateGrowthChart();
+  });
+
+  $('chart-type-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
+    activeChartType = b.dataset.type;
+    $('chart-type-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
+    updateGrowthChart();
   });
 
   $('lb-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
@@ -587,6 +683,14 @@ function bindUI() {
   $('log-delete').onclick = deleteLog;
   $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
   $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
+
+  $('btn-add-marks').onclick = openMarksSheet;
+  $('marks-cancel').onclick = closeMarksSheet;
+  $('marks-sheet').addEventListener('click', e => { if (e.target === $('marks-sheet')) closeMarksSheet(); });
+  $('marks-save').onclick = saveMarksEntry;
+  $('marks-tab-single').onclick = () => switchMarksTab('single');
+  $('marks-tab-bulk').onclick = () => switchMarksTab('bulk');
+  $('bulk-add-row').onclick = addBulkRow;
 }
 
 /* ================= utils ================= */
