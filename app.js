@@ -44,18 +44,39 @@ function haptic(type = 'light') {
   try { window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.(type); } catch {}
 }
 
+/* ---- ANIMATIONS: Staggered Loading & Smooth Bottom Sheets ---- */
 function staggerChildren(wrap) {
+  if (!wrap) return;
   const children = Array.from(wrap.children);
   children.forEach((child, i) => {
     child.style.opacity = '0';
-    child.style.animation = `mhIn 0.3s ease forwards ${i * 0.05}s`;
+    child.style.animation = `mhIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards ${i * 0.05}s`;
   });
+}
+
+function openSheet(id) {
+  const bd = $(id);
+  if (!bd) return;
+  bd.hidden = false;
+  haptic('light');
+}
+
+function closeSheet(id) {
+  const bd = $(id);
+  if (!bd) return;
+  const sheet = bd.querySelector('.sheet');
+  if (sheet) sheet.style.animation = 'sheetSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards';
+  bd.style.animation = 'backdropFadeOut 0.3s ease forwards';
+  setTimeout(() => {
+    bd.hidden = true;
+    if (sheet) sheet.style.animation = '';
+    bd.style.animation = '';
+  }, 300);
 }
 
 /* ---------------- Theme ---------------- */
 function initTheme() {
-  const saved = localStorage.getItem('alt_theme')
-    || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const saved = localStorage.getItem('alt_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', saved);
 }
 function toggleTheme() {
@@ -367,7 +388,9 @@ async function loadLogFeed() {
       <svg class="lb-edit" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
     </div>`;
   }).join('');
+  
   feed.querySelectorAll('.log-bubble').forEach(el => el.onclick = () => openLogSheet(el.dataset.date));
+  staggerChildren(feed);
 }
 
 function formatDateLabel(dateStr) {
@@ -407,10 +430,8 @@ function openLogSheet(date) {
     $('log-save').disabled = false;
   }).catch(() => { $('log-save').disabled = false; });
 
-  $('log-sheet').hidden = false;
+  openSheet('log-sheet');
 }
-
-function closeLogSheet() { $('log-sheet').hidden = true; }
 
 async function saveLog() {
   const btn = $('log-save');
@@ -424,7 +445,7 @@ async function saveLog() {
       writes.push(sb_upsertSession(date, subject, val));
     });
     await Promise.all(writes);
-    closeLogSheet();
+    closeSheet('log-sheet');
     toast(`Saved ${logHours}h for ${formatDateLabel(date)} ✅`);
     await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
   } catch (err) {
@@ -449,7 +470,7 @@ async function deleteLog() {
     const { error } = await db.from('study_sessions')
       .delete().eq('user_id', me.telegram_id).eq('session_date', editingDate);
     if (error) { toast('Delete failed 😕'); return; }
-    closeLogSheet();
+    closeSheet('log-sheet');
     toast('Entry deleted');
     await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
   } catch (err) {
@@ -471,6 +492,7 @@ function buildMarksSubjectTabs() {
     activeMarksSubject = b.dataset.subject;
     $('marks-subject-tabs').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
     renderMarksPanel();
+    haptic('light');
   });
 }
 
@@ -795,9 +817,8 @@ function openMarksSheet(editWeek = null, editPaperType = null) {
   if (titleEl) titleEl.textContent = editing ? 'Edit marks' : 'Add marks';
   $('marks-save').innerHTML = editing ? 'Save changes' : marksSaveDefaultHtml;
 
-  $('marks-sheet').hidden = false;
+  openSheet('marks-sheet');
 }
-function closeMarksSheet() { $('marks-sheet').hidden = true; }
 
 function updatePaperTypeField(presetType = null) {
   const field = $('paper-type-field');
@@ -814,15 +835,11 @@ function getSelectedPaperType() {
   return $('paper-type-toggle').querySelector('.chip.active')?.dataset.type || 'Pure';
 }
 
-function openActivitySheet() { $('activity-sheet').hidden = false; }
-function closeActivitySheet() { $('activity-sheet').hidden = true; }
-
 function openMarksHistorySheet() {
   const sub = $('marks-history-subject');
   if (sub) sub.textContent = `— ${activeMarksSubject}`;
-  $('marks-history-sheet').hidden = false;
+  openSheet('marks-history-sheet');
 }
-function closeMarksHistorySheet() { $('marks-history-sheet').hidden = true; }
 
 function switchMarksTab(tab) {
   marksActiveTab = tab;
@@ -880,7 +897,7 @@ async function saveMarksEntry() {
       const results = await Promise.all(rows.map(r => saveMarks(marksEntrySubject, r.week, r.marks, false, null, null, paperType)));
       if (results.some(r => !r)) return;
     }
-    closeMarksSheet();
+    closeSheet('marks-sheet');
     toast('Marks saved ✅');
     if (marksEntrySubject === activeMarksSubject) renderMarksPanel();
   } catch (err) {
@@ -902,6 +919,7 @@ function buildPaperSubjectTabs() {
     activePaperSubject = b.dataset.subject;
     $('subject-tabs').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
     renderPaperGrid();
+    haptic('light');
   });
 }
 
@@ -913,6 +931,7 @@ function bindPaperCardHold(card) {
   let holdTimer = 0, startX = 0, startY = 0, holdFired = false;
 
   const start = (x, y) => {
+    if (card.classList.contains('pc-expanded')) return;
     holdFired = false;
     startX = x; startY = y;
     card.classList.add('holding');                  
@@ -926,6 +945,7 @@ function bindPaperCardHold(card) {
       quickTogglePaperDots(Number(card.dataset.year));
     }, HOLD_MS);
   };
+  
   const cancel = () => {
     clearTimeout(holdTimer);
     card.classList.remove('holding');
@@ -946,16 +966,25 @@ function bindPaperCardHold(card) {
   card.addEventListener('mouseup', cancel);
   card.addEventListener('mouseleave', cancel);
 
-  card.addEventListener('contextmenu', e => e.preventDefault());
+  card.addEventListener('contextmenu', e => {
+     if (!card.classList.contains('pc-expanded')) e.preventDefault();
+  });
   card.addEventListener('dragstart', e => e.preventDefault());
 
   card.addEventListener('click', (e) => {
-    if (e.target.closest('.pc-expand')) return; 
     if (holdFired) { holdFired = false; return; }
     
     const y = +card.dataset.year;
-    togglePaperCard(card, y);
-    haptic('light');
+    const isOpen = card.classList.contains('pc-expanded');
+
+    if (isOpen) {
+      if (e.target.closest('.pa-history, .pa-add-btn')) return;
+      collapsePaperCard(y);
+      haptic('light');
+    } else {
+      expandPaperCard(card, y);
+      haptic('light');
+    }
   });
 }
 
@@ -1026,7 +1055,6 @@ async function renderPaperGrid(animate = true) {
   }
   
   $('paper-grid').innerHTML = html;
-  
   $('paper-grid').querySelectorAll('.paper-card').forEach(bindPaperCardHold);
   
   if(expandedPaperYear) {
@@ -1053,7 +1081,6 @@ function togglePaperCard(cardEl, year) {
   if (expandedPaperYear !== null && expandedPaperYear !== year) {
       collapsePaperCard(expandedPaperYear);
   }
-  
   if (isOpen) {
       collapsePaperCard(year);
   } else {
@@ -1063,13 +1090,16 @@ function togglePaperCard(cardEl, year) {
 
 function expandPaperCard(cardEl, year) {
   expandedPaperYear = year;
-  cardEl.classList.add('pc-expanded');
   const attempts = paperAttemptsByYear.get(year) || [];
   const region = $(`pc-expand-${year}`);
+  
   if (region) {
+    if (miniChart) { miniChart.destroy(); miniChart = null; }
     region.innerHTML = expandedCardHtml(year, attempts);
     wireExpandedCardEvents(year);
     renderMiniChart(year, attempts);
+    void region.offsetWidth; 
+    cardEl.classList.add('pc-expanded');
   }
 }
 
@@ -1078,11 +1108,13 @@ function collapsePaperCard(year) {
   if (cardEl) cardEl.classList.remove('pc-expanded');
   
   if (expandedPaperYear === year) {
-      miniChart?.destroy(); miniChart = null;
       expandedPaperYear = null;
   }
-  const region = $(`pc-expand-${year}`);
-  if (region) region.innerHTML = '';
+  setTimeout(() => {
+     if (expandedPaperYear === year) return; 
+     const region = $(`pc-expand-${year}`);
+     if (region) region.innerHTML = '';
+  }, 320); 
 }
 
 function expandedCardHtml(year, attempts) {
@@ -1107,23 +1139,16 @@ function paperAttemptBubbleHtml(year, a) {
   const pencilSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
   const trashSvg  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>`;
 
-  return `<div class="mh-bubble" data-round="${a.round_number}">
-    <div class="mh-top">
+  return `<div class="mh-row" data-round="${a.round_number}">
       <span class="mh-week">R${a.round_number}</span>
       <span class="mh-marks">${pct}<small>/100</small></span>
       <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
-      ${a.time_taken_minutes != null ? `<span class="pa-time">⏱ ${a.time_taken_minutes}m</span>` : ''}
+      <span class="mh-sub">${a.time_taken_minutes != null ? `⏱ ${a.time_taken_minutes}m` : ''}</span>
       <span class="mh-actions">
-        <button class="icon-btn pa-edit" aria-label="Edit round ${a.round_number}" title="Edit">
-          ${pencilSvg}
-        </button>
-        <button class="icon-btn mh-del pa-del" aria-label="Delete round ${a.round_number}" title="Delete">
-          ${trashSvg}
-        </button>
+        <button class="icon-btn pa-edit" aria-label="Edit round ${a.round_number}">${pencilSvg}</button>
+        <button class="icon-btn mh-del pa-del" aria-label="Delete round ${a.round_number}">${trashSvg}</button>
       </span>
-    </div>
-    <div class="mh-track"><div class="mh-fill" style="width:${pct}%; background:${color}"></div></div>
-    ${tagsHtml ? `<div class="pa-tags-row">${tagsHtml}</div>` : ''}
+      ${tagsHtml ? `<div class="pa-tags-wrapper"><div class="pa-tags-row">${tagsHtml}</div></div>` : ''}
   </div>`;
 }
 
@@ -1161,14 +1186,18 @@ function wireExpandedCardEvents(year) {
   const region = $(`pc-expand-${year}`);
   if (!region) return;
 
+  const historyWrap = region.querySelector('.pa-history');
+  staggerChildren(historyWrap);
+
   region.querySelector(`#pa-add-attempt-${year}`).onclick = () => openAttemptSheet(year);
 
-  region.querySelector('.pa-history').addEventListener('click', async e => {
+  historyWrap.addEventListener('click', async e => {
     const editBtn = e.target.closest('.pa-edit');
     const delBtn = e.target.closest('.pa-del');
     
     if (editBtn) {
-      const round = +editBtn.closest('.mh-bubble').dataset.round;
+      e.stopPropagation();
+      const round = +editBtn.closest('.mh-row').dataset.round;
       openAttemptSheet(year, round);           
     } else if (delBtn) {
       e.stopPropagation();
@@ -1179,7 +1208,7 @@ function wireExpandedCardEvents(year) {
         setTimeout(() => delBtn.classList.remove('confirm'), 2500);
         return;
       }
-      const round = +delBtn.closest('.mh-bubble').dataset.round;
+      const round = +delBtn.closest('.mh-row').dataset.round;
       await deletePaperAttempt(year, round);
     }
   });
@@ -1265,10 +1294,10 @@ function openAttemptSheet(year, roundNumber = null) {
   $('attempt-tag-dropdown').hidden = true;
   $('attempt-save').innerHTML = existing ? 'Save changes' : attemptSaveDefaultHtml;
 
-  $('attempt-sheet').hidden = false;
+  openSheet('attempt-sheet');
 }
 
-function closeAttemptSheet() { $('attempt-sheet').hidden = true; }
+function closeAttemptSheet() { closeSheet('attempt-sheet'); }
 
 async function saveAttempt() {
   const btn = $('attempt-save');
@@ -1393,6 +1422,7 @@ function renderWeakAreaAnalysis(counts) {
       <span class="wa-count">${count}×</span>
     </div>`;
   }).join('');
+  staggerChildren(wrap);
 }
 
 async function loadLeaderboard() {
@@ -1413,6 +1443,7 @@ async function loadLeaderboard() {
       <span class="lb-name">${escapeHtml(r.name)}</span>
       <span class="lb-hours">${(+r.total_hours).toFixed(1)} h</span>
     </li>`).join('');
+  staggerChildren(list);
 }
 
 function renderSettingsPanel() {
@@ -1439,6 +1470,7 @@ function renderSettingsPanel() {
       settings[key] = newVal;
       group.querySelectorAll('.day-chip').forEach(c => c.classList.toggle('active', c.dataset.day === newVal));
       await saveSettingsField(key, newVal);
+      haptic('light');
     });
   });
 }
@@ -1462,34 +1494,38 @@ async function setStream(stream) {
 function bindUI() {
   $('btn-logout').onclick = logout;
   $('ai-mentor-close')?.addEventListener('click', hideAIMentorCard);
-  $('btn-settings').onclick = () => { renderSettingsPanel(); $('settings-backdrop').hidden = false; };
-  $('settings-close').onclick = () => $('settings-backdrop').hidden = true;
-  $('settings-backdrop').addEventListener('click', e => { if (e.target === $('settings-backdrop')) $('settings-backdrop').hidden = true; });
-  $('set-stream-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => setStream(b.dataset.stream));
+  $('btn-settings').onclick = () => openSheet('settings-backdrop');
+  $('settings-close').onclick = () => closeSheet('settings-backdrop');
+  $('settings-backdrop').addEventListener('click', e => { if (e.target === $('settings-backdrop')) closeSheet('settings-backdrop'); });
+  $('set-stream-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => { setStream(b.dataset.stream); haptic('light'); });
 
   document.querySelectorAll('.seg').forEach(t => t.onclick = () => {
     document.querySelectorAll('.seg').forEach(x => x.classList.toggle('active', x === t));
     $('tab-dashboard').hidden = t.dataset.tab !== 'dashboard';
     $('tab-papers').hidden = t.dataset.tab !== 'papers';
     $('tab-leaderboard').hidden = t.dataset.tab !== 'leaderboard';
+    haptic('light');
   });
 
   $('range-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeRange = b.dataset.range === 'all' ? 'all' : +b.dataset.range;
     $('range-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     updateGrowthChart();
+    haptic('light');
   });
 
   $('chart-type-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeChartType = b.dataset.type;
     $('chart-type-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     updateGrowthChart();
+    haptic('light');
   });
 
   $('lb-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeLbPeriod = b.dataset.period;
     $('lb-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     loadLeaderboard();
+    haptic('light');
   });
 
   $('fab-log').onclick = () => openLogSheet(sltDate());
@@ -1498,18 +1534,19 @@ function bindUI() {
   $('log-sheet').addEventListener('click', e => { if (e.target === $('log-sheet')) closeLogSheet(); });
   $('log-save').onclick = saveLog;
   $('log-delete').onclick = deleteLog;
-  $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
-  $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
+  $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; haptic('light'); };
+  $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; haptic('light'); };
 
   $('btn-add-marks').onclick = () => openMarksSheet();
   $('marks-cancel').onclick = closeMarksSheet;
   $('marks-sheet').addEventListener('click', e => { if (e.target === $('marks-sheet')) closeMarksSheet(); });
   $('marks-save').onclick = saveMarksEntry;
-  $('marks-tab-single').onclick = () => switchMarksTab('single');
-  $('marks-tab-bulk').onclick = () => switchMarksTab('bulk');
-  $('bulk-add-row').onclick = addBulkRow;
+  $('marks-tab-single').onclick = () => { switchMarksTab('single'); haptic('light'); };
+  $('marks-tab-bulk').onclick = () => { switchMarksTab('bulk'); haptic('light'); };
+  $('bulk-add-row').onclick = () => { addBulkRow(); haptic('light'); };
   $('paper-type-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     $('paper-type-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
+    haptic('light');
   });
 
   $('btn-view-activity').onclick = openActivitySheet;
