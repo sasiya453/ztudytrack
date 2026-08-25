@@ -403,23 +403,24 @@ function sltWeekNumber() {
 
 async function renderMarksPanel() {
   const subject = activeMarksSubject;
-  const currentWeek = sltWeekNumber();
-  const fromWeek = Math.max(1, currentWeek - 11);
 
-  // Fetch ALL weeks for this subject (~53 rows max) so the history list is
-  // complete; the chart still only plots the last 12 weeks.
+  // Fetch ALL weeks for this subject (~53 rows max) — used for both the
+  // history list AND the chart, so the two can never disagree.
   const { data, error } = await db.from('model_papers')
     .select('week_number, marks, is_absent').eq('subject', subject)
     .order('week_number', { ascending: false });
   if (error) { toast('Could not load marks 😕'); return; }
   marksHistoryRows = data || [];
 
-  const byWeek = new Map(marksHistoryRows.map(r => [r.week_number, r]));
-  const chartLabels = [], chartData = [];
-  for (let w = fromWeek; w <= currentWeek; w++) {
-    const r = byWeek.get(w);
-    if (r && !r.is_absent && r.marks !== null) { chartLabels.push(`W${w}`); chartData.push(+r.marks); }
-  }
+  // FIX: chart now plots every scored entry (sorted oldest -> newest),
+  // not just weeks inside a trailing 12-week "current calendar week" window.
+  // That window silently dropped any week you typed by hand that fell
+  // outside it, which is why only the first entry ever showed up.
+  const scoredAsc = [...marksHistoryRows]
+    .filter(r => !r.is_absent && r.marks !== null)
+    .sort((a, b) => a.week_number - b.week_number);
+  const chartLabels = scoredAsc.map(r => `W${r.week_number}`);
+  const chartData = scoredAsc.map(r => +r.marks);
 
   marksChart?.destroy();
   const c = chartColors();
