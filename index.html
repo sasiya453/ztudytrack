@@ -114,20 +114,19 @@
         <div class="chart-box chart-box-lg"><canvas id="growthChart"></canvas></div>
       </section>
 
-      <div class="two-col">
-        <section class="panel">
+      <section class="panel">
+        <div class="panel-head">
           <h2>Subject split <small class="muted-sm">· last 30 days</small></h2>
-          <div class="donut-wrap">
-            <div class="chart-box chart-box-donut"><canvas id="subjectDonut"></canvas></div>
-            <ul class="donut-legend" id="donut-legend"></ul>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Recent activity</h2>
-          <div class="log-feed" id="log-feed"></div>
-        </section>
-      </div>
+          <button class="pill-btn" id="btn-view-activity">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+            View activity
+          </button>
+        </div>
+        <div class="donut-wrap">
+          <div class="chart-box chart-box-donut"><canvas id="subjectDonut"></canvas></div>
+          <ul class="donut-legend" id="donut-legend"></ul>
+        </div>
+      </section>
 
       <section class="panel">
         <h2>Consistency <small class="muted-sm">· last 10 weeks</small></h2>
@@ -144,6 +143,9 @@
         <div class="panel-head">
           <h2>Model paper marks</h2>
           <div class="marks-head-actions">
+            <button class="icon-btn" id="btn-marks-history" aria-label="Marks history" title="Marks history">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 3"/></svg>
+            </button>
             <button class="ghost-btn" id="btn-add-marks">+ Add marks</button>
           </div>
         </div>
@@ -160,13 +162,6 @@
           <span><i class="gl-dot" style="background:#E5473C"></i>W &lt;35</span>
         </div>
 
-        <!-- ▼ Marks history list -->
-        <div class="section-label" id="marks-history-label" hidden>
-          Marks history <span class="muted-sm" id="marks-history-summary"></span>
-        </div>
-        <div class="marks-history" id="marks-history">
-          <div class="log-empty">Loading marks…</div>
-        </div>
       </section>
 
       <!-- ============ Paper marks analyze (Essay / MCQ / Total) ============ -->
@@ -236,6 +231,26 @@
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
   </button>
 
+  <!-- ================= Recent activity sheet =================
+       Houses #log-feed (moved out of the dashboard flow). Placed BEFORE
+       #log-sheet in the DOM so tapping a bubble stacks the edit sheet on
+       top of this one; saving/cancelling reveals the refreshed list again. -->
+  <div class="sheet-backdrop" id="activity-sheet" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <h2>Recent activity</h2>
+          <p class="muted-sm">Last 14 days · tap an entry to edit</p>
+        </div>
+        <button class="icon-btn" id="activity-close" aria-label="Close recent activity">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="log-feed" id="log-feed"></div>
+    </div>
+  </div>
+
   <!-- ================= Log sheet ================= -->
   <div class="sheet-backdrop" id="log-sheet" hidden>
     <div class="sheet">
@@ -256,6 +271,28 @@
         <button class="ghost-btn danger-btn" id="log-delete" hidden>Delete</button>
         <button class="ghost-btn" id="log-cancel">Cancel</button>
         <button class="primary-btn" id="log-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Marks history sheet =================
+       Houses #marks-history (moved out from under the marks chart). Placed
+       BEFORE #marks-sheet in the DOM so the edit sheet stacks on top of the
+       list — after save/cancel the refreshed history is revealed again. -->
+  <div class="sheet-backdrop" id="marks-history-sheet" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <h2>Marks history <small class="muted-sm" id="marks-history-subject"></small></h2>
+          <p class="muted-sm" id="marks-history-summary"></p>
+        </div>
+        <button class="icon-btn" id="marks-history-close" aria-label="Close marks history">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="marks-history" id="marks-history">
+        <div class="log-empty">Loading marks…</div>
       </div>
     </div>
   </div>
