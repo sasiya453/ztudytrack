@@ -286,11 +286,19 @@ async function loadLogFeed() {
     return;
   }
   feed.innerHTML = entries.map(([date, v]) => {
-    const subjMeta = Object.entries(v.subjects).map(([s, h]) => `${s} ${h}h`).join(' · ');
+    // One chip per split subject with a tiny dot in that subject's color
+    // (SUBJECT_COLORS, grey fallback), shown under the date line.
+    const subjects = Object.entries(v.subjects).map(([s, h]) => {
+      const color = SUBJECT_COLORS[s] || '#94a3b8';
+      return `<span class="lb-subj"><i class="lb-dot" style="background:${color}"></i>${escapeHtml(s)} ${h}h</span>`;
+    }).join('');
     return `<div class="log-bubble" data-date="${date}">
       <span class="lb-hours">${v.total}h</span>
-      <span class="lb-meta">${formatDateLabel(date)}${subjMeta ? ' · ' + escapeHtml(subjMeta) : ''}</span>
-      <svg class="lb-edit" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      <div class="lb-info">
+        <span class="lb-date">${formatDateLabel(date)}</span>
+        ${subjects ? `<div class="lb-subjects">${subjects}</div>` : ''}
+      </div>
+      <svg class="lb-edit" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
     </div>`;
   }).join('');
   feed.querySelectorAll('.log-bubble').forEach(el => el.onclick = () => openLogSheet(el.dataset.date));
