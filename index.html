@@ -114,29 +114,31 @@
         <div class="chart-box chart-box-lg"><canvas id="growthChart"></canvas></div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Subject split <small class="muted-sm">· last 30 days</small></h2>
-          <button class="pill-btn" id="btn-view-activity">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-            View activity
-          </button>
-        </div>
-        <div class="donut-wrap">
-          <div class="chart-box chart-box-donut"><canvas id="subjectDonut"></canvas></div>
-          <ul class="donut-legend" id="donut-legend"></ul>
-        </div>
-      </section>
+      <div class="two-col">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Subject split <small class="muted-sm">· last 30 days</small></h2>
+            <button class="pill-btn" id="btn-view-activity">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+              View activity
+            </button>
+          </div>
+          <div class="donut-wrap">
+            <div class="chart-box chart-box-donut"><canvas id="subjectDonut"></canvas></div>
+            <ul class="donut-legend" id="donut-legend"></ul>
+          </div>
+        </section>
 
-      <section class="panel">
-        <h2>Consistency <small class="muted-sm">· last 10 weeks</small></h2>
-        <div class="heatmap" id="heatmap"></div>
-        <div class="heatmap-scale">
-          Less
-          <span class="hm-swatch l0"></span><span class="hm-swatch l1"></span><span class="hm-swatch l2"></span><span class="hm-swatch l3"></span><span class="hm-swatch l4"></span>
-          More
-        </div>
-      </section>
+        <section class="panel">
+          <h2>Consistency <small class="muted-sm">· last 10 weeks</small></h2>
+          <div class="heatmap" id="heatmap"></div>
+          <div class="heatmap-scale">
+            Less
+            <span class="hm-swatch l0"></span><span class="hm-swatch l1"></span><span class="hm-swatch l2"></span><span class="hm-swatch l3"></span><span class="hm-swatch l4"></span>
+            More
+          </div>
+        </section>
+      </div>
 
       <!-- ============ Model paper marks ============ -->
       <section class="panel">
