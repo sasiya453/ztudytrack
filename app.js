@@ -565,17 +565,20 @@ function renderMarksHistory() {
   const wrap = $('marks-history');
   if (!wrap) return;
 
-  const label = $('marks-history-label'), summary = $('marks-history-summary');
+  // The summary line now lives in the marks-history sheet header (opened via
+  // the history icon next to "+ Add marks") instead of above the dashboard list.
+  const summary = $('marks-history-summary');
   const rows = marksHistoryRows;
   const scored = rows.filter(r => !r.is_absent && r.marks !== null);
 
-  if (label) {
+  if (summary) {
     if (rows.length) {
       const avg  = scored.length ? (scored.reduce((a, r) => a + +r.marks, 0) / scored.length).toFixed(1) : '—';
       const best = scored.length ? Math.max(...scored.map(r => +r.marks)) : '—';
-      if (summary) summary.textContent = `avg ${avg}% · best ${best}% · ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
-      label.hidden = false;
-    } else label.hidden = true;
+      summary.textContent = `avg ${avg}% · best ${best}% · ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
+    } else {
+      summary.textContent = 'No entries yet';
+    }
   }
 
   if (!rows.length) {
@@ -690,6 +693,22 @@ function openMarksSheet(editWeek = null) {
   $('marks-sheet').hidden = false;
 }
 function closeMarksSheet() { $('marks-sheet').hidden = true; }
+
+/* ================= List bottom sheets (recent activity / marks history) ================= */
+
+/* Both reuse the .sheet-backdrop / .sheet pattern. They sit BEFORE the entry
+   sheets (#log-sheet / #marks-sheet) in the DOM, so tapping an entry inside
+   a list stacks the edit sheet on top of it; saving or cancelling reveals
+   the freshly re-rendered list underneath — no extra state to track. */
+function openActivitySheet() { $('activity-sheet').hidden = false; }
+function closeActivitySheet() { $('activity-sheet').hidden = true; }
+
+function openMarksHistorySheet() {
+  const sub = $('marks-history-subject');
+  if (sub) sub.textContent = `— ${activeMarksSubject}`;
+  $('marks-history-sheet').hidden = false;
+}
+function closeMarksHistorySheet() { $('marks-history-sheet').hidden = true; }
 
 function switchMarksTab(tab) {
   marksActiveTab = tab;
@@ -1317,8 +1336,19 @@ function bindUI() {
   $('marks-tab-bulk').onclick = () => switchMarksTab('bulk');
   $('bulk-add-row').onclick = addBulkRow;
 
-  // NEW: marks history edit/delete via event delegation
+  // NEW: marks history edit/delete via event delegation — works the same now
+  // that #marks-history lives inside its bottom sheet (same node, just moved).
   $('marks-history')?.addEventListener('click', handleMarksHistoryClick);
+
+  // List bottom sheets — "View activity" pill (donut panel) + history icon
+  // (marks panel header). Backdrop taps close, same as the entry sheets.
+  $('btn-view-activity').onclick = openActivitySheet;
+  $('activity-close').onclick = closeActivitySheet;
+  $('activity-sheet').addEventListener('click', e => { if (e.target === $('activity-sheet')) closeActivitySheet(); });
+
+  $('btn-marks-history').onclick = openMarksHistorySheet;
+  $('marks-history-close').onclick = closeMarksHistorySheet;
+  $('marks-history-sheet').addEventListener('click', e => { if (e.target === $('marks-history-sheet')) closeMarksHistorySheet(); });
 }
 
 /* ================= utils ================= */
