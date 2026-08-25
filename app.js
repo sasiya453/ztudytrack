@@ -28,6 +28,8 @@ let editingDate = null, logHours = 0;
 let marksActiveTab = 'single', marksEntrySubject = null;
 let marksHistoryRows = [];        // latest model_papers fetch for the active subject
 let marksSaveDefaultHtml = null;  // pristine "Save" button markup (restored after edit mode)
+let attemptEntryYear = null, attemptEntryRound = null; // paper-attempt sheet state
+let attemptSaveDefaultHtml = null;                     // pristine "Save round" markup
 
 // ---- Past-paper attempt tracker (marks / time / weak-unit tags) ----
 let paperAttemptsByYear = new Map(); // year -> paper_attempts rows, for activePaperSubject
@@ -899,7 +901,7 @@ function expandPaperCard(cardEl, year) {
   const attempts = paperAttemptsByYear.get(year) || [];
   const region = $(`pc-expand-${year}`);
   region.innerHTML = expandedCardHtml(year, attempts);
-  wireExpandedCardEvents(year, attempts);
+  wireExpandedCardEvents(year);
   renderMiniChart(year, attempts);
 }
 
@@ -915,36 +917,18 @@ function collapsePaperCard(year) {
 function expandedCardHtml(year, attempts) {
   const historyHtml = attempts.length
     ? attempts.map(a => paperAttemptBubbleHtml(year, a)).join('')
-    : '<div class="log-empty">No rounds logged yet — log your first attempt below.</div>';
+    : '<div class="log-empty">No rounds logged yet — tap "Add attempt" to log your first round.</div>';
 
+  // The entry form now lives in the #attempt-sheet bottom sheet (opened by
+  // the button below or a history row's edit icon); the expanded card keeps
+  // only the analytics chart + attempt history + completion dots above.
   return `<div class="pa-wrap">
     <div class="chart-box chart-box-sm"><canvas id="pa-chart-${year}"></canvas></div>
 
     <div class="section-label">Attempt history</div>
     <div class="pa-history">${historyHtml}</div>
 
-    <div class="section-label" id="pa-form-label-${year}">Log round 1</div>
-    <form class="entry-form pa-form" id="pa-form-${year}" onsubmit="return false" data-year="${year}" data-round="1">
-      <div class="form-row">
-        <label class="field-label">Marks (0–100)
-          <input type="number" min="0" max="100" step="0.5" id="pa-marks-${year}" placeholder="e.g. 72">
-        </label>
-        <label class="field-label">Time taken (min)
-          <input type="number" min="0" step="1" id="pa-time-${year}" placeholder="e.g. 165">
-        </label>
-      </div>
-      <label class="field-label pa-tag-field">Weak units
-        <div class="tag-input-wrap">
-          <input type="text" id="pa-tag-input-${year}" class="tag-input" placeholder="Type to search or add…" autocomplete="off">
-          <div class="tag-dropdown" id="pa-tag-dropdown-${year}" hidden></div>
-        </div>
-      </label>
-      <div class="tag-chips" id="pa-tag-chips-${year}"></div>
-      <div class="sheet-actions pa-form-actions">
-        <button class="ghost-btn" type="button" id="pa-reset-${year}" hidden>Cancel edit</button>
-        <button class="primary-btn" type="button" id="pa-save-${year}">Save round</button>
-      </div>
-    </form>
+    <button class="primary-btn pa-add-btn" type="button" id="pa-add-attempt-${year}">+ Add attempt</button>
   </div>`;
 }
 
@@ -1004,73 +988,24 @@ function renderMiniChart(year, attempts) {
   });
 }
 
-/** Wires the save/cancel buttons, history edit/delete, and tag input for one expanded card. */
-function wireExpandedCardEvents(year, attempts) {
+/** Wires the "Add attempt" button and history edit/delete for one expanded card. */
+function wireExpandedCardEvents(year) {
   const region = $(`pc-expand-${year}`);
   if (!region) return;
 
-  region.querySelector(`#pa-save-${year}`).onclick = () => handleSavePaperAttempt(year);
-  region.querySelector(`#pa-reset-${year}`).onclick = () => resetPaperForm(year, paperAttemptsByYear.get(year) || []);
+  region.querySelector(`#pa-add-attempt-${year}`).onclick = () => openAttemptSheet(year);
 
   region.querySelector('.pa-history').addEventListener('click', e => {
     const editBtn = e.target.closest('.pa-edit');
     const delBtn = e.target.closest('.pa-del');
     if (editBtn) {
       const round = +editBtn.closest('.mh-bubble').dataset.round;
-      loadRoundIntoForm(year, paperAttemptsByYear.get(year) || [], round);
+      openAttemptSheet(year, round);           // edit mode in the sheet
     } else if (delBtn) {
       if (delBtn.dataset.armed === '1') deletePaperAttempt(year, +delBtn.closest('.mh-bubble').dataset.round);
       else armDeleteBtn(delBtn); // two-tap confirm, same helper the marks history uses
     }
   });
-
-  wireTagInput(year);
-  resetPaperForm(year, attempts);
-}
-
-/** Default form state: the next un-logged round, or (if all 5 are done) editing the last round. */
-function resetPaperForm(year, attempts) {
-  const nextRound = attempts.length < 5 ? attempts.length + 1 : 5;
-  loadRoundIntoForm(year, attempts, nextRound);
-}
-
-function loadRoundIntoForm(year, attempts, roundNumber) {
-  const existing = attempts.find(a => a.round_number === roundNumber);
-  const form = $(`pa-form-${year}`);
-  form.dataset.round = roundNumber;
-  $(`pa-marks-${year}`).value = existing ? existing.marks : '';
-  $(`pa-time-${year}`).value = (existing && existing.time_taken_minutes != null) ? existing.time_taken_minutes : '';
-  selectedWeakTags = existing ? [...(existing.weak_tags || [])] : [];
-  renderTagChipsFor(year);
-  $(`pa-form-label-${year}`).textContent = existing ? `Editing round ${roundNumber}` : `Log round ${roundNumber}`;
-  $(`pa-save-${year}`).textContent = existing ? 'Save changes' : 'Save round';
-  $(`pa-reset-${year}`).hidden = !existing;
-}
-
-async function handleSavePaperAttempt(year) {
-  const btn = $(`pa-save-${year}`);
-  const form = $(`pa-form-${year}`);
-  const round = +form.dataset.round;
-  const marks = parseFloat($(`pa-marks-${year}`).value);
-  const timeRaw = $(`pa-time-${year}`).value.trim();
-  const timeTaken = timeRaw === '' ? null : parseInt(timeRaw, 10);
-
-  if (isNaN(marks) || marks < 0 || marks > 100) { toast('Enter marks between 0 and 100'); return; }
-  if (timeRaw !== '' && (isNaN(timeTaken) || timeTaken < 0)) { toast('Enter a valid time in minutes'); return; }
-
-  setBtnLoading(btn, true, 'Saving…');
-  try {
-    const ok = await saveAttempt(year, round, marks, timeTaken, [...selectedWeakTags]);
-    if (!ok) return;
-    toast(`Round ${round} saved ✅`);
-    await refreshPaperCardAttempts(year);
-    await loadWeakTagsData(); // tags may have changed → refresh autocomplete pool + dashboard analytics
-  } catch (err) {
-    console.error(err);
-    toast('Save failed 😕');
-  } finally {
-    setBtnLoading(btn, false);
-  }
 }
 
 async function saveAttempt(year, roundNumber, marks, timeTaken, tags) {
@@ -1092,14 +1027,14 @@ async function fetchAttemptsForYear(year) {
   return data || [];
 }
 
-/** Re-fetches one year's attempts and redraws its history + chart + form in place. */
+/** Re-fetches one year's attempts and redraws its history + chart in place. */
 async function refreshPaperCardAttempts(year) {
   const attempts = await fetchAttemptsForYear(year);
   paperAttemptsByYear.set(year, attempts);
   const region = $(`pc-expand-${year}`);
   if (!region) return;
   region.innerHTML = expandedCardHtml(year, attempts);
-  wireExpandedCardEvents(year, attempts);
+  wireExpandedCardEvents(year);
   renderMiniChart(year, attempts);
 }
 
@@ -1112,11 +1047,73 @@ async function deletePaperAttempt(year, round) {
   await loadWeakTagsData();
 }
 
-/* ---------------- Weak-unit tag input: real-time autocomplete + chips ---------------- */
+/* ---------------- Paper attempt sheet (Add attempt / edit round) ---------------- */
 
-function wireTagInput(year) {
-  const input = $(`pa-tag-input-${year}`);
-  const dropdown = $(`pa-tag-dropdown-${year}`);
+/** Next un-logged round number — or the 5th round to re-edit when all are done. */
+function nextAttemptRound(attempts) {
+  return attempts.length < 5 ? attempts.length + 1 : 5;
+}
+
+/**
+ * Opens the attempt sheet for one paper year.
+ *  - no roundNumber: "log" mode, targeting the next un-logged round
+ *  - roundNumber:    "edit" mode, fields prefilled from that attempt
+ */
+function openAttemptSheet(year, roundNumber = null) {
+  attemptEntryYear = year;
+  if (attemptSaveDefaultHtml === null) attemptSaveDefaultHtml = $('attempt-save').innerHTML;
+
+  const attempts = paperAttemptsByYear.get(year) || [];
+  const existing = roundNumber != null ? attempts.find(a => a.round_number === +roundNumber) : null;
+  attemptEntryRound = existing ? existing.round_number : nextAttemptRound(attempts);
+
+  $('attempt-sheet-title').textContent = existing ? `Edit round ${attemptEntryRound}` : `Log round ${attemptEntryRound}`;
+  $('attempt-sheet-subject').textContent = `— ${activePaperSubject}`;
+  $('attempt-sheet-year').textContent = `${year} past paper`;
+
+  $('attempt-marks').value = existing ? existing.marks : '';
+  $('attempt-time').value  = (existing && existing.time_taken_minutes != null) ? existing.time_taken_minutes : '';
+  selectedWeakTags = existing ? [...(existing.weak_tags || [])] : [];
+  renderAttemptTagChips();
+  $('attempt-tag-input').value = '';
+  $('attempt-tag-dropdown').hidden = true;
+  $('attempt-save').innerHTML = existing ? 'Save changes' : attemptSaveDefaultHtml;
+
+  $('attempt-sheet').hidden = false;
+}
+
+function closeAttemptSheet() { $('attempt-sheet').hidden = true; }
+
+async function saveAttemptEntry() {
+  const marks = parseFloat($('attempt-marks').value);
+  const timeRaw = $('attempt-time').value.trim();
+  const timeTaken = timeRaw === '' ? null : parseInt(timeRaw, 10);
+
+  if (isNaN(marks) || marks < 0 || marks > 100) { toast('Enter marks between 0 and 100'); return; }
+  if (timeRaw !== '' && (isNaN(timeTaken) || timeTaken < 0)) { toast('Enter a valid time in minutes'); return; }
+
+  const btn = $('attempt-save');
+  setBtnLoading(btn, true, 'Saving…');
+  try {
+    const ok = await saveAttempt(attemptEntryYear, attemptEntryRound, marks, timeTaken, [...selectedWeakTags]);
+    if (!ok) return;
+    toast(`Round ${attemptEntryRound} saved ✅`);
+    closeAttemptSheet();
+    await refreshPaperCardAttempts(attemptEntryYear);
+    await loadWeakTagsData(); // tags may have changed → refresh autocomplete pool + dashboard analytics
+  } catch (err) {
+    console.error(err);
+    toast('Save failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+/* ---------------- Weak-unit tag input (attempt sheet): autocomplete + chips ---------------- */
+
+function wireAttemptTagInput() {
+  const input = $('attempt-tag-input');
+  const dropdown = $('attempt-tag-dropdown');
   let highlighted = -1;
 
   const paintHighlight = opts => opts.forEach((o, i) => o.classList.toggle('active', i === highlighted));
@@ -1142,39 +1139,37 @@ function wireTagInput(year) {
     else if (e.key === 'ArrowUp' && opts.length) { e.preventDefault(); highlighted = Math.max(highlighted - 1, 0); paintHighlight(opts); }
     else if (e.key === 'Enter') {
       e.preventDefault();
-      if (highlighted >= 0 && opts[highlighted]) addWeakTagUI(year, opts[highlighted].dataset.tag);
-      else if (input.value.trim()) addWeakTagUI(year, input.value.trim());
+      if (highlighted >= 0 && opts[highlighted]) addAttemptTag(opts[highlighted].dataset.tag);
+      else if (input.value.trim()) addAttemptTag(input.value.trim());
     } else if (e.key === 'Escape') { dropdown.hidden = true; }
   });
 
   dropdown.addEventListener('mousedown', e => {
     const opt = e.target.closest('.tag-opt');
-    if (opt) { e.preventDefault(); addWeakTagUI(year, opt.dataset.tag); }
+    if (opt) { e.preventDefault(); addAttemptTag(opt.dataset.tag); }
   });
 }
 
-function addWeakTagUI(year, tag) {
+function addAttemptTag(tag) {
   tag = tag.trim();
   if (!tag || selectedWeakTags.some(t => t.toLowerCase() === tag.toLowerCase())) return;
   selectedWeakTags.push(tag);
-  renderTagChipsFor(year);
-  const input = $(`pa-tag-input-${year}`);
+  renderAttemptTagChips();
+  const input = $('attempt-tag-input');
   input.value = '';
-  $(`pa-tag-dropdown-${year}`).hidden = true;
+  $('attempt-tag-dropdown').hidden = true;
   input.focus();
 }
 
-function removeWeakTagUI(year, tag) {
-  selectedWeakTags = selectedWeakTags.filter(t => t !== tag);
-  renderTagChipsFor(year);
-}
-
-function renderTagChipsFor(year) {
-  const wrap = $(`pa-tag-chips-${year}`);
+function renderAttemptTagChips() {
+  const wrap = $('attempt-tag-chips');
   if (!wrap) return;
   wrap.innerHTML = selectedWeakTags.map(t => `
     <span class="tag-chip">${escapeHtml(t)}<button type="button" class="tag-chip-x" data-tag="${escapeHtml(t)}" aria-label="Remove ${escapeHtml(t)}">×</button></span>`).join('');
-  wrap.querySelectorAll('.tag-chip-x').forEach(btn => btn.onclick = () => removeWeakTagUI(year, btn.dataset.tag));
+  wrap.querySelectorAll('.tag-chip-x').forEach(btn => btn.onclick = () => {
+    selectedWeakTags = selectedWeakTags.filter(t => t !== btn.dataset.tag);
+    renderAttemptTagChips();
+  });
 }
 
 /* ---------------- Weak areas analysis (dashboard panel) ---------------- */
@@ -1357,6 +1352,41 @@ function bindUI() {
   $('btn-marks-history').onclick = openMarksHistorySheet;
   $('marks-history-close').onclick = closeMarksHistorySheet;
   $('marks-history-sheet').addEventListener('click', e => { if (e.target === $('marks-history-sheet')) closeMarksHistorySheet(); });
+
+  // Paper-attempt sheet (Papers tab → "+ Add attempt" / history edit icon)
+  $('attempt-cancel').onclick = closeAttemptSheet;
+  $('attempt-close').onclick = closeAttemptSheet;
+  $('attempt-sheet').addEventListener('click', e => { if (e.target === $('attempt-sheet')) closeAttemptSheet(); });
+  $('attempt-save').onclick = saveAttemptEntry;
+  wireAttemptTagInput();
+
+  // Real-time totals — per-subject rows → "hours total" stepper display.
+  // Delegated on the container because the rows are rebuilt on every openLogSheet().
+  // (The stepper +/- still works for manual totals with no subject split —
+  // typing in any subject row simply re-syncs the total to the row sum.)
+  $('log-subject-rows').addEventListener('input', e => {
+    if (!e.target.closest('.subject-row')) return;
+    let sum = 0;
+    $('log-subject-rows').querySelectorAll('.subject-row input').forEach(inp => {
+      const v = parseFloat(inp.value);
+      if (!isNaN(v)) sum += v;                 // empty / invalid rows count as 0
+    });
+    logHours = +sum.toFixed(1);
+    $('log-hours-display').textContent = logHours;
+  });
+
+  // Real-time totals — Essay + MCQ → "Total marks" field.
+  // Empty/NaN fields count as 0; when BOTH are empty the total is left as-is
+  // so logging a total without a breakdown stays possible.
+  const recomputeTotalMarks = () => {
+    const essayRaw = $('single-essay').value.trim();
+    const mcqRaw = $('single-mcq').value.trim();
+    if (essayRaw === '' && mcqRaw === '') return;
+    const essay = parseFloat(essayRaw), mcq = parseFloat(mcqRaw);
+    $('single-marks').value = +((isNaN(essay) ? 0 : essay) + (isNaN(mcq) ? 0 : mcq)).toFixed(1);
+  };
+  $('single-essay').addEventListener('input', recomputeTotalMarks);
+  $('single-mcq').addEventListener('input', recomputeTotalMarks);
 }
 
 /* ================= utils ================= */
