@@ -182,8 +182,22 @@ svg { display: block; }
 .donut-legend .lg-val { font-weight: 700; }
 .donut-empty { color: var(--muted); font-size: .86rem; padding: 20px 0; text-align: center; }
 
-/* ---------- Heatmap ---------- */
-.heatmap { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; gap: 4px; overflow-x: auto; padding-bottom: 4px; }
+/* ---------- Heatmap ----------
+   grid-auto-flow: column creates implicit (week) columns. Left as auto
+   tracks they get stretched by justify-content:normal (behaves as stretch)
+   to fill the panel width — that was the "spread out / stretched" look.
+   Strict 13px tracks + justify-content:start keep the cells compact,
+   strictly-sized square blocks. (Keep these 13px values in sync with .hm-cell.) */
+.heatmap {
+  display: grid;
+  grid-template-rows: repeat(7, 13px);  /* rows exactly cell-sized */
+  grid-auto-columns: 13px;              /* implicit week columns exactly cell-sized */
+  grid-auto-flow: column;
+  gap: 3px;                             /* compact GitHub-style spacing */
+  justify-content: start;               /* pack columns left — never stretch */
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
 .hm-cell { width: 13px; height: 13px; border-radius: 3px; background: var(--border); }
 .hm-cell.l1 { background: var(--accent-soft); }
 .hm-cell.l2 { background: color-mix(in srgb, var(--accent-a) 45%, var(--bg-elevated)); }
@@ -377,6 +391,16 @@ svg { display: block; }
 .sheet-handle { width: 40px; height: 4px; border-radius: 999px; background: var(--border); margin: 4px auto 16px; }
 .sheet h2 { font-size: 1.1rem; margin-bottom: 2px; }
 
+/* ---------- Sheet header (list sheets: recent activity / marks history) ----------
+   Title + subtitle on the left, round close button on the right. */
+.sheet-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px;
+}
+.sheet-head h2 { margin-bottom: 0; }
+.sheet-head .muted-sm { margin-top: 3px; }
+.sheet-head .icon-btn { flex-shrink: 0; }
+
 .stepper { display: flex; align-items: center; justify-content: center; gap: 22px; margin: 22px 0 6px; }
 .stepper-btn {
   width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg);
@@ -438,6 +462,11 @@ svg { display: block; }
 /* Hide the scrollbar everywhere — the list still scrolls fine by touch/wheel/drag,
    this just avoids the chunky native scrollbar some browsers render inconsistently. */
 .marks-history::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* Inside the marks-history sheet the sheet itself is the scroller
+   (.sheet { max-height: 88vh; overflow-y: auto }) — the dashboard's 360px
+   inner cap would nest a second scrollbar inside the modal. */
+#marks-history-sheet .marks-history { max-height: none; }
 
 .mh-bubble {
   display: flex; flex-direction: column; gap: 9px;
