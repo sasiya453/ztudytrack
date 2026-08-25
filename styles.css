@@ -159,7 +159,7 @@ svg { display: block; }
   border: 1px solid var(--border); background: var(--bg-elevated); color: var(--muted);
   border-radius: 999px; padding: 7px 15px; font-weight: 600; font-size: .82rem; transition: .15s;
 }
-.chip-toggle:not(.wrap) .chip { border: none; background: none; }
+.chip-toggle:not(.wrap) .chip:not(.active) { border: none; background: none; }
 .chip.active { background: var(--accent-grad); color: #fff; border-color: transparent; }
 
 /* ---------- Chart containers ----------
@@ -356,10 +356,13 @@ svg { display: block; }
 .marks-history {
   display: flex; flex-direction: column; gap: 10px;
   max-height: 360px; overflow-y: auto; overscroll-behavior: contain;
-  padding: 2px 2px 6px; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  padding: 2px 2px 6px; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* old Edge/IE */
 }
-.marks-history::-webkit-scrollbar { width: 6px; }
-.marks-history::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+/* Hide the scrollbar everywhere — the list still scrolls fine by touch/wheel/drag,
+   this just avoids the chunky native scrollbar some browsers render inconsistently. */
+.marks-history::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 .mh-bubble {
   display: flex; flex-direction: column; gap: 9px;
