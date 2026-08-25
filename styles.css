@@ -528,6 +528,12 @@ svg { display: block; }
 .mh-marks small { font-size: .72rem; font-weight: 500; color: var(--muted); }
 .mh-bubble.mh-is-absent .mh-marks { color: var(--amber); font-size: .88rem; }
 .mh-grade { flex-shrink: 0; font-size: .72rem; font-weight: 800; padding: 3px 9px; border-radius: 7px; letter-spacing: .03em; }
+.mh-type {
+  flex-shrink: 0; font-size: .68rem; font-weight: 700; padding: 3px 8px; border-radius: 999px;
+  letter-spacing: .02em; border: 1px solid transparent;
+}
+.mh-type-pure    { color: #2AABEE; background: rgba(42,171,238,.12); }
+.mh-type-applied { color: #9B6BFF; background: rgba(155,107,255,.12); }
 
 .mh-track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .mh-fill { height: 100%; border-radius: 999px; transition: width .35s ease; }
