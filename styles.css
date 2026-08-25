@@ -647,3 +647,11 @@ svg { display: block; }
   55%  { transform: scale(1.05); }
   100% { transform: scale(1); }
 }
+
+/* --- Added for Paper Attempt unified row styling --- */
+.mh-bubble-alt {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; background: var(--bubble-in); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow); cursor: default;
+}
+.pa-tags-wrapper {
+  width: 100%; margin-top: 4px;
+}
