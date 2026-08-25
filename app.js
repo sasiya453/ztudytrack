@@ -29,6 +29,13 @@ let marksActiveTab = 'single', marksEntrySubject = null;
 let marksHistoryRows = [];        // latest model_papers fetch for the active subject
 let marksSaveDefaultHtml = null;  // pristine "Save" button markup (restored after edit mode)
 
+// ---- Past-paper attempt tracker (marks / time / weak-unit tags) ----
+let paperAttemptsByYear = new Map(); // year -> paper_attempts rows, for activePaperSubject
+let expandedPaperYear = null;        // year currently expanded in the paper grid (accordion — one at a time)
+let miniChart = null;                // Chart.js instance for the expanded card's mini progression chart
+let weakTagPool = [];                // this user's previously-used weak-unit tags, across all subjects (autocomplete source)
+let selectedWeakTags = [];           // chips currently staged in the open attempt-log form
+
 const $ = id => document.getElementById(id);
 const sltDate = (d = new Date()) => new Date(d.getTime() + SLT_OFFSET).toISOString().slice(0, 10);
 const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -99,7 +106,7 @@ async function loadApp() {
   renderSettingsPanel();
   bindUI();
 
-  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid()]);
+  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid(), loadWeakTagsData()]);
 }
 
 function logout() { localStorage.removeItem('alt_token'); location.reload(); }
@@ -769,10 +776,28 @@ async function renderPaperGrid() {
   // automatically without needing another code change each January.
   const currentYear = Math.min(new Date().getFullYear(), 2030);
   const totalYears = currentYear - 2000 + 1;
-  const { data: papers } = await db.from('past_papers')
-    .select('year, attempt_number').eq('subject', activePaperSubject);
+
+  // Grid is about to be rebuilt from scratch — any expanded card and its
+  // chart instance are about to be detached, so drop the refs up front.
+  miniChart?.destroy(); miniChart = null;
+  expandedPaperYear = null;
+
+  const [{ data: papers }, { data: attempts }] = await Promise.all([
+    db.from('past_papers').select('year, attempt_number').eq('subject', activePaperSubject),
+    db.from('paper_attempts')
+      .select('year, round_number, marks, time_taken_minutes, weak_tags')
+      .eq('subject', activePaperSubject).order('round_number', { ascending: true }),
+  ]);
   const byYear = new Map((papers || []).map(p => [p.year, p.attempt_number || 0]));
   const doneCount = [...byYear.values()].filter(n => n > 0).length;
+
+  // One fetch covers every year for this subject, so opening a card doesn't
+  // need its own network round-trip — it just reads from this cache.
+  paperAttemptsByYear = new Map();
+  for (const a of (attempts || [])) {
+    if (!paperAttemptsByYear.has(a.year)) paperAttemptsByYear.set(a.year, []);
+    paperAttemptsByYear.get(a.year).push(a);
+  }
 
   $('progress-label').textContent = `${doneCount} / ${totalYears} papers done`;
   $('progress-pct').textContent = `${Math.round((doneCount / totalYears) * 100)}%`;
@@ -791,8 +816,11 @@ function paperCardHtml(year, rounds) {
     `<button class="pc-dot ${i < rounds ? 'filled' : ''}" data-year="${year}" data-index="${i}" aria-label="Round ${i + 1}"></button>`
   ).join('');
   return `<div class="paper-card ${rounds >= 5 ? 'pc-complete' : ''}" data-year="${year}">
-    <div class="pc-year">${year}</div>
-    <div class="pc-dots">${dots}</div>
+    <div class="pc-head">
+      <div class="pc-year">${year}</div>
+      <div class="pc-dots">${dots}</div>
+    </div>
+    <div class="pc-expand"><div class="pc-expand-inner" id="pc-expand-${year}"></div></div>
   </div>`;
 }
 
@@ -809,7 +837,16 @@ async function setPaperRounds(year, rounds) {
     attempt_number: rounds, status,
   }, { onConflict: 'user_id,subject,year' });
   if (error) { toast('Update failed 😕'); renderPaperGrid(); return; }
-  renderPaperGrid(); // refresh progress bar counts
+
+  // renderPaperGrid() rebuilds every card (needed to refresh the progress
+  // bar), which would otherwise silently close an expanded card — reopen it
+  // afterwards so toggling a dot doesn't kick the user out of the tracker.
+  const reopenYear = expandedPaperYear;
+  await renderPaperGrid();
+  if (reopenYear != null) {
+    const reopenCard = $('paper-grid').querySelector(`.paper-card[data-year="${reopenYear}"]`);
+    if (reopenCard) expandPaperCard(reopenCard, reopenYear);
+  }
 }
 
 function handlePaperDotClick(dot) {
@@ -818,6 +855,338 @@ function handlePaperDotClick(dot) {
   const currentlyFilled = dot.closest('.paper-card').querySelectorAll('.pc-dot.filled').length;
   const next = currentlyFilled === index + 1 ? index : index + 1; // click last filled dot again -> undo one
   setPaperRounds(year, next);
+}
+
+/* ================= Paper attempt tracker (marks / time / weak tags) ================= */
+
+/** Opens/closes a year's card. Only one card is expanded at a time — keeps at most one Chart.js instance alive. */
+function togglePaperCard(cardEl, year) {
+  const isOpen = cardEl.classList.contains('pc-expanded');
+  if (expandedPaperYear !== null && expandedPaperYear !== year) collapsePaperCard(expandedPaperYear);
+  isOpen ? collapsePaperCard(year) : expandPaperCard(cardEl, year);
+}
+
+function expandPaperCard(cardEl, year) {
+  expandedPaperYear = year;
+  cardEl.classList.add('pc-expanded');
+  const attempts = paperAttemptsByYear.get(year) || [];
+  const region = $(`pc-expand-${year}`);
+  region.innerHTML = expandedCardHtml(year, attempts);
+  wireExpandedCardEvents(year, attempts);
+  renderMiniChart(year, attempts);
+}
+
+function collapsePaperCard(year) {
+  const cardEl = $('paper-grid')?.querySelector(`.paper-card[data-year="${year}"]`);
+  cardEl?.classList.remove('pc-expanded');
+  miniChart?.destroy(); miniChart = null;
+  const region = $(`pc-expand-${year}`);
+  if (region) region.innerHTML = '';
+  if (expandedPaperYear === year) expandedPaperYear = null;
+}
+
+function expandedCardHtml(year, attempts) {
+  const historyHtml = attempts.length
+    ? attempts.map(a => paperAttemptBubbleHtml(year, a)).join('')
+    : '<div class="log-empty">No rounds logged yet — log your first attempt below.</div>';
+
+  return `<div class="pa-wrap">
+    <div class="chart-box chart-box-sm"><canvas id="pa-chart-${year}"></canvas></div>
+
+    <div class="section-label">Attempt history</div>
+    <div class="pa-history">${historyHtml}</div>
+
+    <div class="section-label" id="pa-form-label-${year}">Log round 1</div>
+    <form class="entry-form pa-form" id="pa-form-${year}" onsubmit="return false" data-year="${year}" data-round="1">
+      <div class="form-row">
+        <label class="field-label">Marks (0–100)
+          <input type="number" min="0" max="100" step="0.5" id="pa-marks-${year}" placeholder="e.g. 72">
+        </label>
+        <label class="field-label">Time taken (min)
+          <input type="number" min="0" step="1" id="pa-time-${year}" placeholder="e.g. 165">
+        </label>
+      </div>
+      <label class="field-label pa-tag-field">Weak units
+        <div class="tag-input-wrap">
+          <input type="text" id="pa-tag-input-${year}" class="tag-input" placeholder="Type to search or add…" autocomplete="off">
+          <div class="tag-dropdown" id="pa-tag-dropdown-${year}" hidden></div>
+        </div>
+      </label>
+      <div class="tag-chips" id="pa-tag-chips-${year}"></div>
+      <div class="sheet-actions pa-form-actions">
+        <button class="ghost-btn" type="button" id="pa-reset-${year}" hidden>Cancel edit</button>
+        <button class="primary-btn" type="button" id="pa-save-${year}">Save round</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+function paperAttemptBubbleHtml(year, a) {
+  const pct = +a.marks;
+  const color = gradeHex(pct);
+  const g = gradeFor(pct);
+  const tagsHtml = (a.weak_tags || []).map(t => `<span class="pa-tag-pill">${escapeHtml(t)}</span>`).join('');
+  return `<div class="mh-bubble" data-round="${a.round_number}">
+    <div class="mh-top">
+      <span class="mh-week">R${a.round_number}</span>
+      <span class="mh-marks">${pct}<small>/100</small></span>
+      <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
+      ${a.time_taken_minutes != null ? `<span class="pa-time">⏱ ${a.time_taken_minutes}m</span>` : ''}
+      <span class="mh-actions">
+        <button class="mh-btn pa-edit" type="button" aria-label="Edit round ${a.round_number}" title="Edit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <button class="mh-btn mh-del pa-del" type="button" aria-label="Delete round ${a.round_number}" title="Delete">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        </button>
+      </span>
+    </div>
+    <div class="mh-track"><div class="mh-fill" style="width:${pct}%; background:${color}"></div></div>
+    ${tagsHtml ? `<div class="pa-tags-row">${tagsHtml}</div>` : ''}
+  </div>`;
+}
+
+/** Mini line chart of marks across logged rounds — same visual language as the model-paper marks chart. */
+function renderMiniChart(year, attempts) {
+  miniChart?.destroy(); miniChart = null;
+  const canvas = $(`pa-chart-${year}`);
+  if (!canvas) return;
+  const box = canvas.closest('.chart-box');
+  const scored = [...attempts].filter(a => a.marks !== null).sort((a, b) => a.round_number - b.round_number);
+  if (!scored.length) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+
+  const c = chartColors();
+  const ctx = canvas.getContext('2d');
+  miniChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: scored.map(a => `R${a.round_number}`), datasets: [{
+      data: scored.map(a => +a.marks),
+      borderColor: SUBJECT_COLORS[activePaperSubject] || '#2AABEE', backgroundColor: 'transparent',
+      tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2.5,
+      pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: scored.map(a => gradeHex(+a.marks)),
+      pointBorderColor: c.cardBg, pointBorderWidth: 2,
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      scales: { x: { ticks: { color: c.text }, grid: { display: false } },
+                y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
+      plugins: { legend: { display: false } },
+    },
+  });
+}
+
+/** Wires the save/cancel buttons, history edit/delete, and tag input for one expanded card. */
+function wireExpandedCardEvents(year, attempts) {
+  const region = $(`pc-expand-${year}`);
+  if (!region) return;
+
+  region.querySelector(`#pa-save-${year}`).onclick = () => handleSavePaperAttempt(year);
+  region.querySelector(`#pa-reset-${year}`).onclick = () => resetPaperForm(year, paperAttemptsByYear.get(year) || []);
+
+  region.querySelector('.pa-history').addEventListener('click', e => {
+    const editBtn = e.target.closest('.pa-edit');
+    const delBtn = e.target.closest('.pa-del');
+    if (editBtn) {
+      const round = +editBtn.closest('.mh-bubble').dataset.round;
+      loadRoundIntoForm(year, paperAttemptsByYear.get(year) || [], round);
+    } else if (delBtn) {
+      if (delBtn.dataset.armed === '1') deletePaperAttempt(year, +delBtn.closest('.mh-bubble').dataset.round);
+      else armDeleteBtn(delBtn); // two-tap confirm, same helper the marks history uses
+    }
+  });
+
+  wireTagInput(year);
+  resetPaperForm(year, attempts);
+}
+
+/** Default form state: the next un-logged round, or (if all 5 are done) editing the last round. */
+function resetPaperForm(year, attempts) {
+  const nextRound = attempts.length < 5 ? attempts.length + 1 : 5;
+  loadRoundIntoForm(year, attempts, nextRound);
+}
+
+function loadRoundIntoForm(year, attempts, roundNumber) {
+  const existing = attempts.find(a => a.round_number === roundNumber);
+  const form = $(`pa-form-${year}`);
+  form.dataset.round = roundNumber;
+  $(`pa-marks-${year}`).value = existing ? existing.marks : '';
+  $(`pa-time-${year}`).value = (existing && existing.time_taken_minutes != null) ? existing.time_taken_minutes : '';
+  selectedWeakTags = existing ? [...(existing.weak_tags || [])] : [];
+  renderTagChipsFor(year);
+  $(`pa-form-label-${year}`).textContent = existing ? `Editing round ${roundNumber}` : `Log round ${roundNumber}`;
+  $(`pa-save-${year}`).textContent = existing ? 'Save changes' : 'Save round';
+  $(`pa-reset-${year}`).hidden = !existing;
+}
+
+async function handleSavePaperAttempt(year) {
+  const btn = $(`pa-save-${year}`);
+  const form = $(`pa-form-${year}`);
+  const round = +form.dataset.round;
+  const marks = parseFloat($(`pa-marks-${year}`).value);
+  const timeRaw = $(`pa-time-${year}`).value.trim();
+  const timeTaken = timeRaw === '' ? null : parseInt(timeRaw, 10);
+
+  if (isNaN(marks) || marks < 0 || marks > 100) { toast('Enter marks between 0 and 100'); return; }
+  if (timeRaw !== '' && (isNaN(timeTaken) || timeTaken < 0)) { toast('Enter a valid time in minutes'); return; }
+
+  setBtnLoading(btn, true, 'Saving…');
+  try {
+    const ok = await saveAttempt(year, round, marks, timeTaken, [...selectedWeakTags]);
+    if (!ok) return;
+    toast(`Round ${round} saved ✅`);
+    await refreshPaperCardAttempts(year);
+    await loadWeakTagsData(); // tags may have changed → refresh autocomplete pool + dashboard analytics
+  } catch (err) {
+    console.error(err);
+    toast('Save failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+async function saveAttempt(year, roundNumber, marks, timeTaken, tags) {
+  const body = {
+    user_id: me.telegram_id, subject: activePaperSubject, year, round_number: roundNumber,
+    marks, time_taken_minutes: timeTaken, weak_tags: tags,
+  };
+  const { error } = await db.from('paper_attempts').upsert(body, { onConflict: 'user_id,subject,year,round_number' });
+  if (error) { toast('Save failed 😕'); return false; }
+  return true;
+}
+
+async function fetchAttemptsForYear(year) {
+  const { data, error } = await db.from('paper_attempts')
+    .select('year, round_number, marks, time_taken_minutes, weak_tags')
+    .eq('subject', activePaperSubject).eq('year', year)
+    .order('round_number', { ascending: true });
+  if (error) { toast('Could not load attempts 😕'); return []; }
+  return data || [];
+}
+
+/** Re-fetches one year's attempts and redraws its history + chart + form in place. */
+async function refreshPaperCardAttempts(year) {
+  const attempts = await fetchAttemptsForYear(year);
+  paperAttemptsByYear.set(year, attempts);
+  const region = $(`pc-expand-${year}`);
+  if (!region) return;
+  region.innerHTML = expandedCardHtml(year, attempts);
+  wireExpandedCardEvents(year, attempts);
+  renderMiniChart(year, attempts);
+}
+
+async function deletePaperAttempt(year, round) {
+  const { error } = await db.from('paper_attempts').delete()
+    .eq('user_id', me.telegram_id).eq('subject', activePaperSubject).eq('year', year).eq('round_number', round);
+  if (error) { toast('Delete failed 😕'); return; }
+  toast(`Round ${round} deleted 🗑️`);
+  await refreshPaperCardAttempts(year);
+  await loadWeakTagsData();
+}
+
+/* ---------------- Weak-unit tag input: real-time autocomplete + chips ---------------- */
+
+function wireTagInput(year) {
+  const input = $(`pa-tag-input-${year}`);
+  const dropdown = $(`pa-tag-dropdown-${year}`);
+  let highlighted = -1;
+
+  const paintHighlight = opts => opts.forEach((o, i) => o.classList.toggle('active', i === highlighted));
+
+  const showMatches = () => {
+    const q = input.value.trim().toLowerCase();
+    const pool = weakTagPool.filter(t => !selectedWeakTags.includes(t));
+    const matches = (q ? pool.filter(t => t.toLowerCase().includes(q)) : pool).slice(0, 6);
+    highlighted = -1;
+    if (!matches.length) { dropdown.hidden = true; dropdown.innerHTML = ''; return; }
+    dropdown.innerHTML = matches.map(t => `<div class="tag-opt" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</div>`).join('');
+    dropdown.hidden = false;
+  };
+
+  input.addEventListener('input', showMatches);
+  input.addEventListener('focus', () => { if (weakTagPool.length) showMatches(); });
+  // Delay hiding on blur so a click on a dropdown option registers before it disappears.
+  input.addEventListener('blur', () => setTimeout(() => { dropdown.hidden = true; }, 150));
+
+  input.addEventListener('keydown', e => {
+    const opts = [...dropdown.querySelectorAll('.tag-opt')];
+    if (e.key === 'ArrowDown' && opts.length) { e.preventDefault(); highlighted = Math.min(highlighted + 1, opts.length - 1); paintHighlight(opts); }
+    else if (e.key === 'ArrowUp' && opts.length) { e.preventDefault(); highlighted = Math.max(highlighted - 1, 0); paintHighlight(opts); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlighted >= 0 && opts[highlighted]) addWeakTagUI(year, opts[highlighted].dataset.tag);
+      else if (input.value.trim()) addWeakTagUI(year, input.value.trim());
+    } else if (e.key === 'Escape') { dropdown.hidden = true; }
+  });
+
+  dropdown.addEventListener('mousedown', e => {
+    const opt = e.target.closest('.tag-opt');
+    if (opt) { e.preventDefault(); addWeakTagUI(year, opt.dataset.tag); }
+  });
+}
+
+function addWeakTagUI(year, tag) {
+  tag = tag.trim();
+  if (!tag || selectedWeakTags.some(t => t.toLowerCase() === tag.toLowerCase())) return;
+  selectedWeakTags.push(tag);
+  renderTagChipsFor(year);
+  const input = $(`pa-tag-input-${year}`);
+  input.value = '';
+  $(`pa-tag-dropdown-${year}`).hidden = true;
+  input.focus();
+}
+
+function removeWeakTagUI(year, tag) {
+  selectedWeakTags = selectedWeakTags.filter(t => t !== tag);
+  renderTagChipsFor(year);
+}
+
+function renderTagChipsFor(year) {
+  const wrap = $(`pa-tag-chips-${year}`);
+  if (!wrap) return;
+  wrap.innerHTML = selectedWeakTags.map(t => `
+    <span class="tag-chip">${escapeHtml(t)}<button type="button" class="tag-chip-x" data-tag="${escapeHtml(t)}" aria-label="Remove ${escapeHtml(t)}">×</button></span>`).join('');
+  wrap.querySelectorAll('.tag-chip-x').forEach(btn => btn.onclick = () => removeWeakTagUI(year, btn.dataset.tag));
+}
+
+/* ---------------- Weak areas analysis (dashboard panel) ---------------- */
+
+/** One query covers both the autocomplete pool (all unique tags) and the ranked frequency list. */
+async function loadWeakTagsData() {
+  const { data, error } = await db.from('paper_attempts').select('weak_tags').not('weak_tags', 'is', null);
+  if (error) { console.error(error); return; }
+
+  const counts = new Map();
+  const poolSet = new Set();
+  for (const row of (data || [])) {
+    for (const t of (row.weak_tags || [])) {
+      poolSet.add(t);
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+  }
+  weakTagPool = [...poolSet].sort((a, b) => a.localeCompare(b));
+  renderWeakAreaAnalysis(counts);
+}
+
+function renderWeakAreaAnalysis(counts) {
+  const wrap = $('weak-areas-list');
+  if (!wrap) return;
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  if (!entries.length) {
+    wrap.innerHTML = '<div class="log-empty">No weak units tagged yet — tag a unit when logging a past-paper round to see your weakest areas here.</div>';
+    return;
+  }
+  const max = entries[0][1];
+  wrap.innerHTML = entries.map(([tag, count], i) => {
+    const color = i === 0 ? 'var(--danger)' : i < 3 ? 'var(--amber)' : 'var(--accent-a)';
+    return `<div class="wa-row">
+      <span class="wa-rank">${i + 1}</span>
+      <span class="wa-name" title="${escapeHtml(tag)}">${escapeHtml(tag)}</span>
+      <div class="wa-track"><div class="wa-fill" style="width:${(count / max * 100).toFixed(0)}%; background:${color}"></div></div>
+      <span class="wa-count">${count}×</span>
+    </div>`;
+  }).join('');
 }
 
 /* ================= Leaderboard ================= */
@@ -906,7 +1275,10 @@ function bindUI() {
 
   $('paper-grid').addEventListener('click', e => {
     const dot = e.target.closest('.pc-dot');
-    if (dot) handlePaperDotClick(dot);
+    if (dot) { handlePaperDotClick(dot); return; }
+    if (e.target.closest('.pc-expand')) return; // clicks inside the expanded form shouldn't collapse the card
+    const card = e.target.closest('.paper-card');
+    if (card) togglePaperCard(card, +card.dataset.year);
   });
 
   $('range-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
