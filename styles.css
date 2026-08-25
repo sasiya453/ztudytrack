@@ -53,7 +53,16 @@ body {
   background: var(--bg); color: var(--ink);
   transition: background .25s ease, color .25s ease;
 }
-button { font: inherit; cursor: pointer; color: inherit; }
+
+/* ---- PREMIUM ANIMATIONS: Buttons & Inputs Scaling ---- */
+button, .log-bubble, .mh-row, .paper-card {
+  transition: transform 0.15s var(--ease-spring), background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+button:active:not(:disabled), .log-bubble:active, .mh-row:active {
+  transform: scale(0.96);
+}
+.primary-btn:active:not(:disabled) { transform: scale(0.94); }
+.fab:active { transform: scale(0.90); }
 svg { display: block; }
 
 .ic-moon { display: block; }
@@ -122,6 +131,15 @@ svg { display: block; }
   color: var(--muted); font-weight: 600; font-size: .88rem; transition: .15s;
 }
 .seg.active { background: var(--accent-grad); color: #fff; }
+
+/* ---- ANIMATIONS: Smooth Tab Transitions ---- */
+#tab-dashboard:not([hidden]), #tab-papers:not([hidden]), #tab-leaderboard:not([hidden]) {
+  animation: tabFadeIn 0.4s var(--ease-spring) forwards;
+}
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(15px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* ---------- Stat cards ---------- */
 .stats-grid {
@@ -210,10 +228,8 @@ svg { display: block; }
   display: flex; align-items: center; gap: 12px;
   background: var(--bubble-in); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 12px 14px; box-shadow: var(--shadow);
-  cursor: pointer; transition: border-color .15s;
-  animation: lbIn .18s ease both;
+  cursor: pointer;
 }
-@keyframes lbIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .log-bubble:hover { border-color: var(--accent-a); }
 .log-bubble .lb-hours {
   flex-shrink: 0; min-width: 52px; text-align: center;
@@ -245,10 +261,9 @@ svg { display: block; }
 .paper-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
 .paper-card {
   background: var(--bg-elevated); border-radius: var(--radius-md); padding: 14px 10px; text-align: center;
-  box-shadow: var(--shadow); border: 1px solid var(--border); transition: border-color .15s, transform .15s;
+  box-shadow: var(--shadow); border: 1px solid var(--border);
 }
 .paper-card.pc-complete { border-color: var(--green); }
-.paper-card:hover { transform: translateY(-1px); }
 .pc-year { font-weight: 700; font-size: .95rem; margin-bottom: 10px; }
 .pc-dots { display: flex; justify-content: center; gap: 5px; }
 .pc-dot {
@@ -270,13 +285,18 @@ svg { display: block; }
 .paper-card.pc-expanded .pc-year { margin-bottom: 0; }
 .paper-card.pc-expanded .pc-dots { justify-content: flex-end; }
 
+/* ---- ANIMATIONS: Smooth Expanding & Minimizing without layout snapping ---- */
 .pc-expand {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows .32s ease;
+  margin-top: 0;
+  transition: grid-template-rows .32s var(--ease-spring), margin-top .32s var(--ease-spring);
 }
 .pc-expand-inner { overflow: hidden; min-height: 0; }
-.paper-card.pc-expanded .pc-expand { grid-template-rows: 1fr; margin-top: 14px; }
+.paper-card.pc-expanded .pc-expand { 
+  grid-template-rows: 1fr; 
+  margin-top: 14px; 
+}
 
 .pa-wrap { text-align: left; padding-top: 2px; }
 .chart-box-sm { height: 140px; margin-bottom: 6px; }
@@ -377,11 +397,23 @@ svg { display: block; }
   box-shadow: 0 10px 26px var(--accent-soft), var(--shadow); z-index: 30;
 }
 
-/* ---------- Bottom sheet ---------- */
+/* ---- ANIMATIONS: Smooth Bottom Sheets ---- */
 .sheet-backdrop {
   position: fixed; inset: 0; background: rgba(10, 14, 20, .48); z-index: 60;
   display: flex; align-items: flex-end; justify-content: center;
 }
+.sheet-backdrop:not([hidden]) {
+  animation: backdropFadeIn 0.3s ease forwards;
+}
+.sheet-backdrop:not([hidden]) .sheet {
+  animation: sheetSlideUp 0.4s var(--ease-spring) forwards;
+}
+
+@keyframes backdropFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes backdropFadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes sheetSlideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes sheetSlideDown { from { transform: translateY(0); } to { transform: translateY(100%); } }
+
 .sheet {
   background: var(--bg-elevated); width: 100%; max-width: 480px; border-radius: 24px 24px 0 0;
   padding: 12px 22px 26px; box-shadow: var(--shadow); max-height: 88vh; overflow-y: auto;
@@ -474,38 +506,19 @@ svg { display: block; }
 }
 #activity-sheet .log-feed::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
-.mh-bubble {
-  display: flex; flex-direction: column; gap: 9px;
-  background: var(--bubble-in); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 12px 14px; box-shadow: var(--shadow);
-  animation: mhIn .18s ease both;
+/* ---- ANIMATIONS: Staggered Fade-in Keyframe ---- */
+@keyframes mhIn { 
+  from { opacity: 0; transform: translateY(12px) scale(0.98); } 
+  to { opacity: 1; transform: translateY(0) scale(1); } 
 }
-@keyframes mhIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-
-.mh-top { display: flex; align-items: center; gap: 10px; }
-.mh-week {
-  flex-shrink: 0; min-width: 40px; text-align: center; font-size: .7rem; font-weight: 700;
-  color: var(--accent-a); background: var(--accent-soft); border-radius: 999px; padding: 4px 8px;
-}
-.mh-marks { flex: 1; font-size: .94rem; font-weight: 700; }
-.mh-marks small { font-size: .72rem; font-weight: 500; color: var(--muted); }
-.mh-bubble.mh-is-absent .mh-marks { color: var(--amber); font-size: .88rem; }
-.mh-grade { flex-shrink: 0; font-size: .72rem; font-weight: 800; padding: 3px 9px; border-radius: 7px; letter-spacing: .03em; }
-.mh-type {
-  flex-shrink: 0; font-size: .68rem; font-weight: 700; padding: 3px 8px; border-radius: 999px;
-  letter-spacing: .02em; border: 1px solid transparent;
-}
-.mh-type-pure    { color: #2AABEE; background: rgba(42,171,238,.12); }
-.mh-type-applied { color: #9B6BFF; background: rgba(155,107,255,.12); }
-
-.mh-track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
-.mh-fill { height: 100%; border-radius: 999px; transition: width .35s ease; }
-.mh-bubble.mh-is-absent .mh-track { opacity: .35; }
 
 .mh-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bubble-in); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow); cursor: pointer; }
 .mh-badge { flex-shrink: 0; font-size: .68rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: .02em; background: rgba(42,171,238,.12); color: var(--tg-blue); }
+.mh-marks { flex: 1; font-size: .94rem; font-weight: 700; }
+.mh-marks small { font-size: .72rem; font-weight: 500; color: var(--muted); }
 .mh-marks.absent { color: var(--amber); font-size: .88rem; }
 .mh-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .76rem; color: var(--muted); font-weight: 500; }
+.mh-grade { flex-shrink: 0; font-size: .72rem; font-weight: 800; padding: 3px 9px; border-radius: 7px; letter-spacing: .03em; }
 
 .pill-btn {
   display: flex; align-items: center; gap: 6px; background: var(--accent-soft); color: var(--accent-a);
@@ -525,7 +538,7 @@ svg { display: block; }
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.primary-btn:disabled, .ghost-btn:disabled { opacity: .65; cursor: default; }
+.primary-btn:disabled, .ghost-btn:disabled { opacity: .65; cursor: default; transform: none !important; }
 
 @media (max-width: 600px) {
   .stat-value { font-size: 1.4rem; }
@@ -614,7 +627,7 @@ svg { display: block; }
   .ai-mentor-card { left: 16px; right: 16px; bottom: 16px; width: auto; }
 }
 
-/* ---- FIX 1: marks-history row actions (edit + delete) ---- */
+/* ---- ROW ACTIONS (Edit + Delete) ---- */
 .mh-actions {
   display: inline-flex;
   align-items: center;
@@ -630,7 +643,7 @@ svg { display: block; }
 .mh-del { color: var(--red); }
 .mh-del.confirm { color: #fff; background: var(--red); }
 
-/* ---- FIX 3: long-press (hold) feedback on past-paper cards ---- */
+/* ---- LONG-PRESS FEEDBACK ---- */
 .paper-card {
   -webkit-touch-callout: none;   
   -webkit-user-select: none;
@@ -648,10 +661,7 @@ svg { display: block; }
   100% { transform: scale(1); }
 }
 
-/* --- Added for Paper Attempt unified row styling --- */
-.mh-bubble-alt {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; background: var(--bubble-in); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow); cursor: default;
-}
+/* --- PA Tags styling --- */
 .pa-tags-wrapper {
   width: 100%; margin-top: 4px;
 }
