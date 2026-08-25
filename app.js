@@ -2,6 +2,11 @@
 const CONFIG = {
   SUPABASE_URL: 'https://fidrrkzbfjbhbkgmdtpb.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpZHJya3piZmpiaGJrZ21kdHBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0NTYxMTMsImV4cCI6MjEwMzAzMjExM30.9bya3Y6-giCxu64rEPb8EGrUx0Gj0xHWQR2IkpsC4XU',
+  // Same backend that already issues the #auth=<jwt> token for the Telegram
+  // Login Widget (see index.html). It needs one more route added — see the
+  // note above bootTelegramWebApp() below — that verifies WebApp initData
+  // and returns { token } in the same JWT shape.
+  TELEGRAM_WEBAPP_AUTH_URL: 'https://studydash.sazindux.workers.dev/api/telegram-webapp-auth',
 };
 const DAY_MS = 86_400_000, SLT_OFFSET = 5.5 * 3_600_000;
 const DAY_LIST = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -68,17 +73,113 @@ function boot() {
   $('theme-toggle-login')?.addEventListener('click', toggleTheme);
   $('theme-toggle')?.addEventListener('click', toggleTheme);
 
+  // ---- Mode detection: Telegram Mini App vs regular browser ----
+  const tgApp = window.Telegram?.WebApp;
+  const tgUser = tgApp?.initDataUnsafe?.user;
+
+  if (tgApp && tgUser) {
+    tgApp.ready();
+    tgApp.expand();
+    bootTelegramWebApp(tgApp);
+    return; // never render #login-view / the Telegram Login Widget in this mode
+  }
+
+  // ---- Regular browser fallback: existing alt_token / #auth flow ----
   const hash = new URLSearchParams(location.hash.slice(1)).get('auth');
   const token = hash || localStorage.getItem('alt_token');
   history.replaceState(null, '', location.pathname);
-  if (!token) return;
+  if (!token) return; // #login-view (with the Telegram Login Widget) stays visible
 
   localStorage.setItem('alt_token', token);
+  initSupabase(token);
+  loadApp().catch(err => { console.error(err); logout(); });
+}
+
+function initSupabase(token) {
   db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false },
   });
-  loadApp().catch(err => { console.error(err); logout(); });
+}
+
+/* ---------------- Telegram Mini App auto-login ----------------
+ * `initDataUnsafe` is UNVERIFIED — its name says so. Any page can define a
+ * fake `window.Telegram.WebApp` object and claim to be any user, so it is
+ * only used here for an optimistic "Signing you in as …" label. It is
+ * NEVER used to authenticate, to decide `telegram_id`, or to write to the
+ * `users` table directly with the anon key.
+ *
+ * The actual login always goes through `tgApp.initData` — the raw, signed
+ * string Telegram provides — sent to a backend endpoint that verifies its
+ * HMAC-SHA-256 signature against the bot token (per Telegram's WebApp auth
+ * spec) before minting the same kind of Supabase JWT the Login Widget flow
+ * already uses (see CONFIG.TELEGRAM_WEBAPP_AUTH_URL and the worker snippet
+ * below). That backend call is what makes this "instant" from the user's
+ * perspective — typically well under a second — while keeping the same
+ * security guarantee as the widget flow: nobody can mint a session for a
+ * `telegram_id` they don't control.
+ */
+async function bootTelegramWebApp(tgApp) {
+  const tgUser = tgApp.initDataUnsafe.user;
+  showTelegramBoot(tgUser);
+
+  // Fast path: reuse a still-valid cached token so returning users skip the
+  // network round trip entirely.
+  const cached = localStorage.getItem('alt_token');
+  if (cached && !isTokenExpired(cached)) {
+    initSupabase(cached);
+    try { await loadApp(); return; } catch (err) { console.error(err); localStorage.removeItem('alt_token'); }
+  }
+
+  try {
+    const res = await fetch(CONFIG.TELEGRAM_WEBAPP_AUTH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: tgApp.initData }), // raw signed string, verified server-side
+    });
+    if (!res.ok) throw new Error(`telegram-webapp-auth ${res.status}`);
+    const { token } = await res.json();
+    if (!token) throw new Error('telegram-webapp-auth: no token in response');
+
+    localStorage.setItem('alt_token', token);
+    initSupabase(token);
+
+    // Keep the profile fresh. Safe to do with the anon key here because
+    // `token` is now a verified JWT carrying `telegram_id` as a claim, and
+    // RLS on `users` should restrict writes to `telegram_id = auth.telegram_id()`
+    // (i.e. a user can only ever upsert their own row).
+    await db.from('users').upsert({
+      telegram_id: tgUser.id,
+      name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' '),
+      photo_url: tgUser.photo_url || null,
+    }, { onConflict: 'telegram_id' });
+
+    await loadApp();
+  } catch (err) {
+    console.error('Telegram Mini App auto-login failed, falling back to login widget', err);
+    hideTelegramBoot();
+    $('login-view').hidden = false; // regular Telegram Login Widget flow as a safety net
+  }
+}
+
+function isTokenExpired(token) {
+  try {
+    const { exp } = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return !exp || Date.now() >= exp * 1000;
+  } catch { return true; }
+}
+
+function showTelegramBoot(tgUser) {
+  const el = $('tg-boot');
+  if (!el) return; // markup not added to index.html — degrades to a blank screen briefly
+  const name = [tgUser?.first_name, tgUser?.last_name].filter(Boolean).join(' ');
+  const status = $('tg-boot-status');
+  if (status) status.textContent = name ? `Signing you in as ${name}…` : 'Signing you in…';
+  el.hidden = false;
+}
+function hideTelegramBoot() {
+  const el = $('tg-boot');
+  if (el) el.hidden = true;
 }
 
 async function loadApp() {
@@ -98,6 +199,7 @@ async function loadApp() {
   activePaperSubject = STREAM_SUBJECTS[settings.stream][0];
   activeMarksSubject = STREAM_SUBJECTS[settings.stream][0];
 
+  hideTelegramBoot();
   $('login-view').hidden = true;
   $('app-view').hidden = false;
   $('user-name').textContent = me.name.split(' ')[0];
