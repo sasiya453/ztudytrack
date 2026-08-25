@@ -333,7 +333,9 @@ svg { display: block; }
 }
 .tag-chip-x:hover { background: rgba(0, 0, 0, .08); opacity: 1; }
 
-.pa-form-actions { margin-top: 14px; justify-content: flex-start; }
+/* Full-width "Add attempt" button inside an expanded paper card —
+   the entry form itself now lives in the #attempt-sheet bottom sheet. */
+.pa-add-btn { width: 100%; margin-top: 6px; }
 
 /* ---------- Weak areas analysis (dashboard) ---------- */
 .weak-areas-list { display: flex; flex-direction: column; gap: 10px; }
@@ -441,17 +443,17 @@ svg { display: block; }
 .primary-btn { background: var(--accent-grad); color: #fff; border: none; border-radius: 12px; padding: 10px 22px; font-weight: 700; }
 .full-width { width: 100%; margin-top: 20px; text-align: center; }
 
-/* ---------- Side panel (settings) ---------- */
-.sheet-backdrop.side { justify-content: flex-end; align-items: stretch; }
-.side-panel {
-  background: var(--bg-elevated); width: 100%; max-width: 380px; height: 100%;
-  padding: 20px 22px 26px; overflow-y: auto; box-shadow: var(--shadow); animation: slideIn .22s ease;
+/* ---------- Settings sheet (bottom sheet, same pattern as the list/entry
+   sheets). Stream + Class days sit in padded inset sections. ---------- */
+.settings-section {
+  background: var(--bg); border-radius: var(--radius-md);
+  padding: 14px 16px 16px; margin-bottom: 14px;
 }
-@keyframes slideIn { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-.side-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
-.side-head h2 { font-size: 1.05rem; }
+.settings-section .section-label { margin: 0 0 10px; }
+.settings-section .chip-toggle.wrap { margin-bottom: 0; }
 
 .day-picker-group { margin-bottom: 18px; }
+.settings-section .day-picker-group:last-child { margin-bottom: 0; }
 .day-picker-group .sr-name { display: block; font-weight: 600; font-size: .86rem; margin-bottom: 8px; }
 .day-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .day-chip {
