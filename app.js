@@ -26,6 +26,8 @@ let activeRange = 14, activeChartType = 'bar';
 let growthChart = null, donutChart = null, marksChart = null;
 let editingDate = null, logHours = 0;
 let marksActiveTab = 'single', marksEntrySubject = null;
+let marksHistoryRows = [];        // latest model_papers fetch for the active subject
+let marksSaveDefaultHtml = null;  // pristine "Save" button markup (restored after edit mode)
 
 const $ = id => document.getElementById(id);
 const sltDate = (d = new Date()) => new Date(d.getTime() + SLT_OFFSET).toISOString().slice(0, 10);
@@ -46,7 +48,12 @@ function toggleTheme() {
 initTheme();
 
 /* ---------------- Boot & auth ---------------- */
-window.addEventListener('DOMContentLoaded', boot);
+// Works whether app.js loads before or after DOMContentLoaded.
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
 
 function boot() {
   $('theme-toggle-login')?.addEventListener('click', toggleTheme);
@@ -115,10 +122,12 @@ async function loadStats() {
   $('stat-week').innerHTML  = `${last7.toFixed(1)}<span class="unit">h</span>`;
   $('stat-avg').innerHTML   = `${(last7 / 7).toFixed(1)}<span class="unit">h</span>`;
 
-  // streak: consecutive days with hours > 0, counting back from today (or yesterday if today unlogged)
+  // streak: consecutive days with hours > 0, counting back from today.
+  // FIX: if today isn't logged yet, skip it and count from yesterday
+  // (previously the streak showed 0 even when yesterday was logged).
   const dOrder = [...values30].reverse(); // index 0 = today
   let start = 0;
-  if (dOrder[0] === 0 && dOrder[1] === 0) start = 1;
+  if (dOrder[0] === 0) start = 1;
   let streak = 0;
   for (let i = start; i < dOrder.length && dOrder[i] > 0; i++) streak++;
   $('stat-streak').innerHTML = `${streak}<span class="unit">🔥</span>`;
@@ -199,7 +208,8 @@ async function loadDonut() {
 
   const totals = {};
   for (const r of (data || [])) totals[r.subject] = (totals[r.subject] || 0) + +r.study_hours;
-  const entries = Object.entries(totals).filter(([, v]) => v > 0);
+  // FIX: sort BEFORE building the chart so legend order matches segment order.
+  const entries = Object.entries(totals).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
 
   donutChart?.destroy();
   const c = chartColors();
@@ -217,7 +227,7 @@ async function loadDonut() {
       backgroundColor: entries.map(e => SUBJECT_COLORS[e[0]] || '#94a3b8'), borderWidth: 0 }] },
     options: { plugins: { legend: { display: false } }, cutout: '68%' },
   });
-  $('donut-legend').innerHTML = entries.sort((a, b) => b[1] - a[1]).map(([name, hrs]) => `
+  $('donut-legend').innerHTML = entries.map(([name, hrs]) => `
     <li><span class="sw" style="background:${SUBJECT_COLORS[name] || '#94a3b8'}"></span>
       <span class="lg-name">${escapeHtml(name)}</span><span class="lg-val">${hrs.toFixed(1)}h</span></li>`).join('');
 }
@@ -296,6 +306,9 @@ function openLogSheet(date) {
       <input type="number" min="0" max="24" step="0.5" value="0" />
     </div>`).join('');
 
+  // FIX: block Save until existing values finish loading, otherwise a quick
+  // tap would overwrite saved per-subject hours with 0.
+  $('log-save').disabled = true;
   db.from('study_sessions').select('subject, study_hours').eq('session_date', date).then(({ data }) => {
     let total = 0, hasAny = false;
     for (const r of (data || [])) {
@@ -309,7 +322,8 @@ function openLogSheet(date) {
     logHours = total;
     $('log-hours-display').textContent = logHours;
     $('log-delete').hidden = !hasAny;
-  });
+    $('log-save').disabled = false;
+  }).catch(() => { $('log-save').disabled = false; });
 
   $('log-sheet').hidden = false;
 }
@@ -317,17 +331,26 @@ function openLogSheet(date) {
 function closeLogSheet() { $('log-sheet').hidden = true; }
 
 async function saveLog() {
-  const date = editingDate;
-  const writes = [sb_upsertSession(date, 'Total', logHours)];
-  $('log-subject-rows').querySelectorAll('.subject-row').forEach(row => {
-    const subject = row.dataset.subject;
-    const val = parseFloat(row.querySelector('input').value) || 0;
-    writes.push(sb_upsertSession(date, subject, val));
-  });
-  await Promise.all(writes);
-  closeLogSheet();
-  toast(`Saved ${logHours}h for ${formatDateLabel(date)} ✅`);
-  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
+  const btn = $('log-save');
+  setBtnLoading(btn, true, 'Saving…');
+  try {
+    const date = editingDate;
+    const writes = [sb_upsertSession(date, 'Total', logHours)];
+    $('log-subject-rows').querySelectorAll('.subject-row').forEach(row => {
+      const subject = row.dataset.subject;
+      const val = parseFloat(row.querySelector('input').value) || 0;
+      writes.push(sb_upsertSession(date, subject, val));
+    });
+    await Promise.all(writes);
+    closeLogSheet();
+    toast(`Saved ${logHours}h for ${formatDateLabel(date)} ✅`);
+    await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
+  } catch (err) {
+    console.error(err);
+    toast('Save failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
+  }
 }
 
 function sb_upsertSession(date, subject, hours) {
@@ -338,10 +361,21 @@ function sb_upsertSession(date, subject, hours) {
 }
 
 async function deleteLog() {
-  await db.from('study_sessions').delete().eq('user_id', me.telegram_id).eq('session_date', editingDate);
-  closeLogSheet();
-  toast('Entry deleted');
-  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
+  const btn = $('log-delete');
+  setBtnLoading(btn, true, 'Deleting…');
+  try {
+    const { error } = await db.from('study_sessions')
+      .delete().eq('user_id', me.telegram_id).eq('session_date', editingDate);
+    if (error) { toast('Delete failed 😕'); return; }
+    closeLogSheet();
+    toast('Entry deleted');
+    await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
+  } catch (err) {
+    console.error(err);
+    toast('Delete failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
+  }
 }
 
 /* ================= Model paper marks ================= */
@@ -372,11 +406,15 @@ async function renderMarksPanel() {
   const currentWeek = sltWeekNumber();
   const fromWeek = Math.max(1, currentWeek - 11);
 
-  const { data } = await db.from('model_papers')
+  // Fetch ALL weeks for this subject (~53 rows max) so the history list is
+  // complete; the chart still only plots the last 12 weeks.
+  const { data, error } = await db.from('model_papers')
     .select('week_number, marks, is_absent').eq('subject', subject)
-    .gte('week_number', fromWeek).lte('week_number', currentWeek).order('week_number');
-  const byWeek = new Map((data || []).map(r => [r.week_number, r]));
+    .order('week_number', { ascending: false });
+  if (error) { toast('Could not load marks 😕'); return; }
+  marksHistoryRows = data || [];
 
+  const byWeek = new Map(marksHistoryRows.map(r => [r.week_number, r]));
   const chartLabels = [], chartData = [];
   for (let w = fromWeek; w <= currentWeek; w++) {
     const r = byWeek.get(w);
@@ -399,6 +437,8 @@ async function renderMarksPanel() {
     },
     plugins: [gradeBandsPlugin],
   });
+
+  renderMarksHistory();
 }
 
 /** A/L grading bands drawn behind the marks line: A 75+, B 65-74, C 55-64, S 35-54, W <35 */
@@ -436,16 +476,133 @@ async function saveMarks(subject, week, marks, isAbsent) {
   return true;
 }
 
+/* ---------------- Marks history list (edit / delete) ---------------- */
+
+/** Same thresholds as gradeBandsPlugin: A ≥75, B 65–74, C 55–64, S 35–54, W <35 */
+function gradeFor(marks) {
+  if (marks >= 75) return { letter: 'A', color: 'var(--green)',    soft: 'var(--green-soft)' };
+  if (marks >= 65) return { letter: 'B', color: 'var(--accent-a)', soft: 'var(--accent-soft)' };
+  if (marks >= 55) return { letter: 'C', color: 'var(--amber)',    soft: 'var(--amber-soft)' };
+  if (marks >= 35) return { letter: 'S', color: 'var(--amber)',    soft: 'var(--amber-soft)' };
+  return               { letter: 'W', color: 'var(--danger)',   soft: 'var(--danger-soft)' };
+}
+
+function renderMarksHistory() {
+  const wrap = $('marks-history');
+  if (!wrap) return;
+
+  const label = $('marks-history-label'), summary = $('marks-history-summary');
+  const rows = marksHistoryRows;
+  const scored = rows.filter(r => !r.is_absent && r.marks !== null);
+
+  if (label) {
+    if (rows.length) {
+      const avg  = scored.length ? (scored.reduce((a, r) => a + +r.marks, 0) / scored.length).toFixed(1) : '—';
+      const best = scored.length ? Math.max(...scored.map(r => +r.marks)) : '—';
+      if (summary) summary.textContent = `avg ${avg}% · best ${best}% · ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
+      label.hidden = false;
+    } else label.hidden = true;
+  }
+
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="log-empty">No marks recorded for this subject yet — tap "Add marks" to log your first paper.</div>';
+    return;
+  }
+
+  const actions = r => `
+    <span class="mh-actions">
+      <button class="mh-btn mh-edit" type="button" aria-label="Edit week ${r.week_number}" title="Edit">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      </button>
+      <button class="mh-btn mh-del" type="button" aria-label="Delete week ${r.week_number}" title="Delete">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      </button>
+    </span>`;
+
+  wrap.innerHTML = rows.map(r => {
+    if (r.is_absent || r.marks === null) {
+      return `<div class="mh-bubble mh-is-absent" data-week="${r.week_number}">
+        <span class="mh-week">W${r.week_number}</span>
+        <span class="mh-marks">Absent</span>
+        ${actions(r)}
+      </div>`;
+    }
+    const g = gradeFor(+r.marks);
+    return `<div class="mh-bubble" data-week="${r.week_number}">
+      <span class="mh-week">W${r.week_number}</span>
+      <span class="mh-marks">${+r.marks}<small>/100</small></span>
+      <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
+      ${actions(r)}
+    </div>`;
+  }).join('');
+}
+
+function handleMarksHistoryClick(e) {
+  const btn = e.target.closest('.mh-btn');
+  if (!btn) return;
+  const week = +btn.closest('.mh-bubble').dataset.week;
+  if (btn.classList.contains('mh-del')) {
+    if (btn.dataset.armed === '1') deleteMarksEntry(week);  // 2nd tap = confirmed
+    else armDeleteBtn(btn);                                  // 1st tap = arm
+  } else {
+    openMarksSheet(week);                                    // edit mode
+  }
+}
+
+/** Two-tap confirm: the bin becomes a red "Delete?" pill for 3 seconds. */
+function armDeleteBtn(btn) {
+  document.querySelectorAll('.mh-btn[data-armed="1"]').forEach(disarmDeleteBtn); // one armed at a time
+  btn.dataset.armed = '1';
+  btn.dataset.origHtml = btn.innerHTML;
+  btn.classList.add('mh-armed');
+  btn.textContent = 'Delete?';
+  setTimeout(() => { if (document.body.contains(btn)) disarmDeleteBtn(btn); }, 3000);
+}
+function disarmDeleteBtn(btn) {
+  delete btn.dataset.armed;
+  btn.classList.remove('mh-armed');
+  if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+  delete btn.dataset.origHtml;
+}
+
+async function deleteMarksEntry(week) {
+  const bubble = $('marks-history')?.querySelector(`.mh-bubble[data-week="${week}"]`);
+  bubble?.classList.add('mh-deleting');
+  const { error } = await db.from('model_papers')
+    .delete()
+    .eq('user_id', me.telegram_id)
+    .eq('subject', activeMarksSubject)
+    .eq('week_number', week);
+  if (error) {
+    bubble?.classList.remove('mh-deleting');
+    return toast('Delete failed 😕');
+  }
+  toast(`Deleted week ${week} marks 🗑️`);
+  renderMarksPanel(); // redraws chart + history
+}
+
 /* ---------------- Marks entry sheet (Single / Bulk) ---------------- */
 
-function openMarksSheet() {
+function openMarksSheet(editWeek = null) {
   marksEntrySubject = activeMarksSubject;
+  if (marksSaveDefaultHtml === null) marksSaveDefaultHtml = $('marks-save').innerHTML;
+
+  // Editing an existing entry? (editWeek comes from the history list)
+  const editing = (editWeek != null && typeof editWeek !== 'object')
+    ? marksHistoryRows.find(r => r.week_number === +editWeek) : null;
+
   $('marks-sheet-subject').textContent = `— ${marksEntrySubject}`;
-  $('single-week').value = sltWeekNumber();
-  $('single-marks').value = '';
-  $('single-absent').checked = false;
+  $('single-week').value   = editing ? editing.week_number : sltWeekNumber();
+  $('single-marks').value  = (editing && editing.marks !== null && editing.marks !== undefined) ? editing.marks : '';
+  $('single-absent').checked = !!(editing && editing.is_absent);
   resetBulkRows();
   switchMarksTab('single');
+  $('marks-tab-bulk').style.display = editing ? 'none' : ''; // bulk hidden while editing
+
+  const titleEl = $('marks-sheet-title');
+  if (titleEl) titleEl.textContent = editing ? 'Edit marks' : 'Add marks';
+  $('marks-save').innerHTML = editing ? 'Save changes' : marksSaveDefaultHtml;
+
   $('marks-sheet').hidden = false;
 }
 function closeMarksSheet() { $('marks-sheet').hidden = true; }
@@ -480,25 +637,34 @@ function wireBulkDeletes() {
 }
 
 async function saveMarksEntry() {
-  if (marksActiveTab === 'single') {
-    const week = +$('single-week').value;
-    const isAbsent = $('single-absent').checked;
-    const marks = parseFloat($('single-marks').value);
-    if (!week || week < 1 || week > 53) return toast('Enter a valid week number');
-    if (!isAbsent && (isNaN(marks) || marks < 0 || marks > 100)) return toast('Enter marks between 0 and 100');
-    const ok = await saveMarks(marksEntrySubject, week, marks, isAbsent);
-    if (!ok) return;
-  } else {
-    const rows = [...$('bulk-rows').querySelectorAll('.bulk-row')]
-      .map(r => ({ week: +r.querySelector('.b-week').value, marks: parseFloat(r.querySelector('.b-marks').value) }))
-      .filter(r => r.week >= 1 && r.week <= 53 && !isNaN(r.marks) && r.marks >= 0 && r.marks <= 100);
-    if (!rows.length) return toast('Add at least one valid week + marks row');
-    const results = await Promise.all(rows.map(r => saveMarks(marksEntrySubject, r.week, r.marks, false)));
-    if (results.some(r => !r)) return;
+  const btn = $('marks-save');
+  setBtnLoading(btn, true, 'Saving…');
+  try {
+    if (marksActiveTab === 'single') {
+      const week = +$('single-week').value;
+      const isAbsent = $('single-absent').checked;
+      const marks = parseFloat($('single-marks').value);
+      if (!week || week < 1 || week > 53) { toast('Enter a valid week number'); return; }
+      if (!isAbsent && (isNaN(marks) || marks < 0 || marks > 100)) { toast('Enter marks between 0 and 100'); return; }
+      const ok = await saveMarks(marksEntrySubject, week, marks, isAbsent);
+      if (!ok) return;
+    } else {
+      const rows = [...$('bulk-rows').querySelectorAll('.bulk-row')]
+        .map(r => ({ week: +r.querySelector('.b-week').value, marks: parseFloat(r.querySelector('.b-marks').value) }))
+        .filter(r => r.week >= 1 && r.week <= 53 && !isNaN(r.marks) && r.marks >= 0 && r.marks <= 100);
+      if (!rows.length) { toast('Add at least one valid week + marks row'); return; }
+      const results = await Promise.all(rows.map(r => saveMarks(marksEntrySubject, r.week, r.marks, false)));
+      if (results.some(r => !r)) return;
+    }
+    closeMarksSheet();
+    toast('Marks saved ✅');
+    if (marksEntrySubject === activeMarksSubject) renderMarksPanel();
+  } catch (err) {
+    console.error(err);
+    toast('Save failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
   }
-  closeMarksSheet();
-  toast('Marks saved ✅');
-  if (marksEntrySubject === activeMarksSubject) renderMarksPanel();
 }
 
 /* ================= Past paper grid ================= */
@@ -585,7 +751,7 @@ async function loadLeaderboard() {
   list.innerHTML = rows.map((r, i) => `
     <li class="${r.telegram_id === me.telegram_id ? 'me' : ''}">
       <span class="rank">${medals[i] || i + 1}</span>
-      <span class="lb-photo">${r.photo_url ? `<img src="${r.photo_url}" alt="">` : r.name[0].toUpperCase()}</span>
+      <span class="lb-photo">${r.photo_url ? `<img src="${escapeHtml(r.photo_url)}" alt="">` : r.name[0].toUpperCase()}</span>
       <span class="lb-name">${escapeHtml(r.name)}</span>
       <span class="lb-hours">${(+r.total_hours).toFixed(1)} h</span>
     </li>`).join('');
@@ -684,13 +850,17 @@ function bindUI() {
   $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
   $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
 
-  $('btn-add-marks').onclick = openMarksSheet;
+  // Arrow wrapper: prevents the click Event object from being misread as `editWeek`
+  $('btn-add-marks').onclick = () => openMarksSheet();
   $('marks-cancel').onclick = closeMarksSheet;
   $('marks-sheet').addEventListener('click', e => { if (e.target === $('marks-sheet')) closeMarksSheet(); });
   $('marks-save').onclick = saveMarksEntry;
   $('marks-tab-single').onclick = () => switchMarksTab('single');
   $('marks-tab-bulk').onclick = () => switchMarksTab('bulk');
   $('bulk-add-row').onclick = addBulkRow;
+
+  // NEW: marks history edit/delete via event delegation
+  $('marks-history')?.addEventListener('click', handleMarksHistoryClick);
 }
 
 /* ================= utils ================= */
@@ -698,4 +868,18 @@ let toastTimer;
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2400);
+}
+
+/** Toggles a spinner + label on a button and blocks double-submits. */
+function setBtnLoading(btn, loading, label = 'Saving…') {
+  if (!btn) return;
+  if (loading) {
+    btn.dataset.origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="btn-spinner"></span>${label}`;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
+    delete btn.dataset.origHtml;
+  }
 }
