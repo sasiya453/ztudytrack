@@ -311,6 +311,13 @@
       </div>
 
       <form class="entry-form" id="marks-form-single" onsubmit="return false">
+        <div class="field-label" id="paper-type-field" hidden>
+          Paper type
+          <div class="chip-toggle" id="paper-type-toggle">
+            <button type="button" class="chip active" data-type="Pure">Pure Maths</button>
+            <button type="button" class="chip" data-type="Applied">Applied Maths</button>
+          </div>
+        </div>
         <div class="form-row">
           <label class="field-label">Week number
             <input type="number" id="single-week" min="1" max="53" placeholder="e.g. 32">
