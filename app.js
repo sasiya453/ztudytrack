@@ -154,7 +154,6 @@ function logout() { localStorage.removeItem('alt_token'); location.reload(); }
 
 /* ================= OVERVIEW: stats + growth chart ================= */
 
-/* ---- FIX 4: touch-friendly Chart.js tooltips ---- */
 const CHART_EVENTS = ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove', 'touchend'];
 const TOUCH_TOOLTIP_OPTS = {
   mode: 'index',
@@ -292,7 +291,7 @@ async function loadDonut() {
   donutChart?.destroy();
   const donutBox = $('subjectDonut').closest('.chart-box');
   if (!entries.length) {
-    $('donut-legend').innerHTML = '<li class="donut-empty">No per-subject hours logged in the last 30 days yet — split your hours next time you log.</li>';
+    $('donut-legend').innerHTML = '<li class="donut-empty">No per-subject hours logged in the last 30 days yet.</li>';
     donutBox.style.display = 'none';
     return;
   }
@@ -351,7 +350,7 @@ async function loadLogFeed() {
   const entries = [...byDate.entries()].filter(([, v]) => v.total !== null).slice(0, 8);
   const feed = $('log-feed');
   if (!entries.length) {
-    feed.innerHTML = '<div class="log-empty">No study hours logged yet — tap the + button to add today\'s hours.</div>';
+    feed.innerHTML = '<div class="log-empty">No study hours logged yet.</div>';
     return;
   }
   feed.innerHTML = entries.map(([date, v]) => {
@@ -724,8 +723,6 @@ function renderMarksHistory() {
     const r = marksHistoryRows.find(x =>
       +x.week_number === +el.dataset.week && (x.paper_type || '') === el.dataset.type);
     if (!r) return;
-    
-    // Call openMarksSheet
     openMarksSheet(+r.week_number, (r.paper_type === 'Pure' || r.paper_type === 'Applied') ? r.paper_type : null);
   };
 
@@ -952,12 +949,12 @@ function bindPaperCardHold(card) {
   card.addEventListener('contextmenu', e => e.preventDefault());
   card.addEventListener('dragstart', e => e.preventDefault());
 
-  card.addEventListener('click', () => {
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.pc-expand')) return; 
     if (holdFired) { holdFired = false; return; }
+    
     const y = +card.dataset.year;
-    expandedPaperYear = expandedPaperYear === y ? null : y;
-    miniChart?.destroy(); miniChart = null;
-    paintPaperGrid(false);
+    togglePaperCard(card, y);
     haptic('light');
   });
 }
@@ -1002,9 +999,6 @@ async function renderPaperGrid(animate = true) {
   const currentYear = Math.min(new Date().getFullYear(), 2030);
   const totalYears = currentYear - 2000 + 1;
 
-  miniChart?.destroy(); miniChart = null;
-  expandedPaperYear = null;
-
   const [{ data: papers }, { data: attempts }] = await Promise.all([
     db.from('past_papers').select('year, attempt_number').eq('subject', activePaperSubject),
     db.from('paper_attempts')
@@ -1030,13 +1024,11 @@ async function renderPaperGrid(animate = true) {
     const rounds = Math.max(byYear.get(y) || 0, roundsList.length);
     html += paperCardHtml(y, rounds);
   }
+  
   $('paper-grid').innerHTML = html;
   
-  paintPaperGrid(animate);
-}
-
-function paintPaperGrid(animate) {
   $('paper-grid').querySelectorAll('.paper-card').forEach(bindPaperCardHold);
+  
   if(expandedPaperYear) {
     const reopenCard = $('paper-grid').querySelector(`.paper-card[data-year="${expandedPaperYear}"]`);
     if (reopenCard) expandPaperCard(reopenCard, expandedPaperYear);
@@ -1058,8 +1050,15 @@ function paperCardHtml(year, rounds) {
 
 function togglePaperCard(cardEl, year) {
   const isOpen = cardEl.classList.contains('pc-expanded');
-  if (expandedPaperYear !== null && expandedPaperYear !== year) collapsePaperCard(expandedPaperYear);
-  isOpen ? collapsePaperCard(year) : expandPaperCard(cardEl, year);
+  if (expandedPaperYear !== null && expandedPaperYear !== year) {
+      collapsePaperCard(expandedPaperYear);
+  }
+  
+  if (isOpen) {
+      collapsePaperCard(year);
+  } else {
+      expandPaperCard(cardEl, year);
+  }
 }
 
 function expandPaperCard(cardEl, year) {
@@ -1067,18 +1066,23 @@ function expandPaperCard(cardEl, year) {
   cardEl.classList.add('pc-expanded');
   const attempts = paperAttemptsByYear.get(year) || [];
   const region = $(`pc-expand-${year}`);
-  region.innerHTML = expandedCardHtml(year, attempts);
-  wireExpandedCardEvents(year);
-  renderMiniChart(year, attempts);
+  if (region) {
+    region.innerHTML = expandedCardHtml(year, attempts);
+    wireExpandedCardEvents(year);
+    renderMiniChart(year, attempts);
+  }
 }
 
 function collapsePaperCard(year) {
   const cardEl = $('paper-grid')?.querySelector(`.paper-card[data-year="${year}"]`);
-  cardEl?.classList.remove('pc-expanded');
-  miniChart?.destroy(); miniChart = null;
+  if (cardEl) cardEl.classList.remove('pc-expanded');
+  
+  if (expandedPaperYear === year) {
+      miniChart?.destroy(); miniChart = null;
+      expandedPaperYear = null;
+  }
   const region = $(`pc-expand-${year}`);
   if (region) region.innerHTML = '';
-  if (expandedPaperYear === year) expandedPaperYear = null;
 }
 
 function expandedCardHtml(year, attempts) {
@@ -1088,10 +1092,8 @@ function expandedCardHtml(year, attempts) {
 
   return `<div class="pa-wrap">
     <div class="chart-box chart-box-sm"><canvas id="pa-chart-${year}"></canvas></div>
-
     <div class="section-label">Attempt history</div>
     <div class="pa-history">${historyHtml}</div>
-
     <button class="primary-btn pa-add-btn" type="button" id="pa-add-attempt-${year}">+ Add attempt</button>
   </div>`;
 }
@@ -1101,6 +1103,10 @@ function paperAttemptBubbleHtml(year, a) {
   const color = gradeHex(pct);
   const g = gradeFor(pct);
   const tagsHtml = (a.weak_tags || []).map(t => `<span class="pa-tag-pill">${escapeHtml(t)}</span>`).join('');
+
+  const pencilSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+  const trashSvg  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>`;
+
   return `<div class="mh-bubble" data-round="${a.round_number}">
     <div class="mh-top">
       <span class="mh-week">R${a.round_number}</span>
@@ -1108,11 +1114,11 @@ function paperAttemptBubbleHtml(year, a) {
       <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
       ${a.time_taken_minutes != null ? `<span class="pa-time">⏱ ${a.time_taken_minutes}m</span>` : ''}
       <span class="mh-actions">
-        <button class="mh-btn pa-edit" type="button" aria-label="Edit round ${a.round_number}" title="Edit">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <button class="icon-btn pa-edit" aria-label="Edit round ${a.round_number}" title="Edit">
+          ${pencilSvg}
         </button>
-        <button class="mh-btn mh-del pa-del" type="button" aria-label="Delete round ${a.round_number}" title="Delete">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        <button class="icon-btn mh-del pa-del" aria-label="Delete round ${a.round_number}" title="Delete">
+          ${trashSvg}
         </button>
       </span>
     </div>
@@ -1157,32 +1163,24 @@ function wireExpandedCardEvents(year) {
 
   region.querySelector(`#pa-add-attempt-${year}`).onclick = () => openAttemptSheet(year);
 
-  region.querySelector('.pa-history').addEventListener('click', e => {
+  region.querySelector('.pa-history').addEventListener('click', async e => {
     const editBtn = e.target.closest('.pa-edit');
     const delBtn = e.target.closest('.pa-del');
+    
     if (editBtn) {
       const round = +editBtn.closest('.mh-bubble').dataset.round;
       openAttemptSheet(year, round);           
     } else if (delBtn) {
-      if (delBtn.dataset.armed === '1') deletePaperAttempt(year, +delBtn.closest('.mh-bubble').dataset.round);
-      else {
-        document.querySelectorAll('.mh-btn[data-armed="1"]').forEach(btn => {
-           delete btn.dataset.armed;
-           btn.classList.remove('mh-armed');
-           if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
-        });
-        delBtn.dataset.armed = '1';
-        delBtn.dataset.origHtml = delBtn.innerHTML;
-        delBtn.classList.add('mh-armed');
-        delBtn.textContent = 'Delete?';
-        setTimeout(() => { 
-            if (document.body.contains(delBtn)){
-                delete delBtn.dataset.armed;
-                delBtn.classList.remove('mh-armed');
-                if (delBtn.dataset.origHtml) delBtn.innerHTML = delBtn.dataset.origHtml;
-            } 
-        }, 3000);
+      e.stopPropagation();
+      if (!delBtn.classList.contains('confirm')) {
+        delBtn.classList.add('confirm');
+        haptic('light');
+        toast('Tap delete again to confirm');
+        setTimeout(() => delBtn.classList.remove('confirm'), 2500);
+        return;
       }
+      const round = +delBtn.closest('.mh-bubble').dataset.round;
+      await deletePaperAttempt(year, round);
     }
   });
 }
