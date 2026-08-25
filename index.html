@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- viewport-fit=cover is REQUIRED for env(safe-area-inset-bottom) on notched iPhones -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>A/L Study Tracker</title>
   <link rel="icon" type="image/png" href="logo.png">
   <meta name="theme-color" content="#EEF2F6">
+  <meta name="theme-color" content="#0E1621" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -14,9 +16,6 @@
 <body>
 
   <!-- ================= TELEGRAM MINI APP AUTO-LOGIN ================= -->
-  <!-- Shown only inside Telegram, in place of #login-view, while app.js
-       verifies the session with the backend. See bootTelegramWebApp() in
-       app.js. Never shown in a regular browser. -->
   <div class="login-view tg-boot" id="tg-boot" hidden>
     <div class="login-orb"></div>
     <div class="login-card">
@@ -43,9 +42,6 @@
       <h1>A/L Study Tracker</h1>
       <p>Log study hours, track model-paper marks and past papers, and compete with friends — right from Telegram.</p>
 
-      <!-- ⚠️ REPLACE with the values from your current index.html.
-           data-auth-url must point to the endpoint that exchanges the Telegram
-           payload for your Supabase JWT and redirects back here with #auth=<token> -->
       <div class="widget-slot">
         <script async src="https://telegram.org/js/telegram-widget.js?22"
           data-telegram-login="Ztudytrackbot"
@@ -82,6 +78,8 @@
     </header>
 
     <nav class="segmented">
+      <!-- Sliding indicator — positioned/animated by positionSegIndicator() in app.js -->
+      <span class="seg-indicator" id="seg-indicator" aria-hidden="true"></span>
       <button class="seg active" data-tab="dashboard">Dashboard</button>
       <button class="seg" data-tab="papers">Papers</button>
       <button class="seg" data-tab="leaderboard">Leaderboard</button>
@@ -196,7 +194,7 @@
         <div class="analyze-empty" id="analyze-empty">Log Essay/MCQ marks with an entry to see the breakdown here.</div>
       </section>
 
-      <!-- ============ Weak areas analysis (from tagged past-paper rounds) ============ -->
+      <!-- ============ Weak areas analysis ============ -->
       <section class="panel">
         <h2>Weak areas analysis <small class="muted-sm">· from tagged past-paper rounds</small></h2>
         <div class="weak-areas-list" id="weak-areas-list">
@@ -214,7 +212,8 @@
           <h2>Past papers progress</h2>
           <span class="muted-sm" id="progress-pct">0%</span>
         </div>
-        <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+        <!-- Fill is animated via transform:scaleX() — never width -->
+        <div class="progress-track"><div class="progress-fill" id="progress-fill" style="transform:scaleX(0)"></div></div>
         <p class="progress-sub" id="progress-label">…</p>
         <p class="hint">
           <span class="hint-dot"></span> not attempted
@@ -251,10 +250,7 @@
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
   </button>
 
-  <!-- ================= Recent activity sheet =================
-       Houses #log-feed (moved out of the dashboard flow). Placed BEFORE
-       #log-sheet in the DOM so tapping a bubble stacks the edit sheet on
-       top of this one; saving/cancelling reveals the refreshed list again. -->
+  <!-- ================= Recent activity sheet ================= -->
   <div class="sheet-backdrop" id="activity-sheet" hidden>
     <div class="sheet">
       <div class="sheet-handle"></div>
@@ -295,10 +291,7 @@
     </div>
   </div>
 
-  <!-- ================= Marks history sheet =================
-       Houses #marks-history (moved out from under the marks chart). Placed
-       BEFORE #marks-sheet in the DOM so the edit sheet stacks on top of the
-       list — after save/cancel the refreshed history is revealed again. -->
+  <!-- ================= Marks history sheet ================= -->
   <div class="sheet-backdrop" id="marks-history-sheet" hidden>
     <div class="sheet">
       <div class="sheet-handle"></div>
@@ -369,10 +362,7 @@
     </div>
   </div>
 
-  <!-- ================= Paper attempt sheet =================
-       Form for logging / editing a past-paper round (marks, time, weak
-       units). Opened from the "+ Add attempt" button or a history row's
-       edit icon inside an expanded paper card (Papers tab). -->
+  <!-- ================= Paper attempt sheet ================= -->
   <div class="sheet-backdrop" id="attempt-sheet" hidden>
     <div class="sheet">
       <div class="sheet-handle"></div>
@@ -411,9 +401,7 @@
     </div>
   </div>
 
-  <!-- ================= Settings sheet =================
-       Same bottom-sheet pattern as the other sheets (was a right side-panel).
-       Stream + Class days live in padded inset sections; × closes. -->
+  <!-- ================= Settings sheet ================= -->
   <div class="sheet-backdrop" id="settings-backdrop" hidden>
     <div class="sheet">
       <div class="sheet-handle"></div>
