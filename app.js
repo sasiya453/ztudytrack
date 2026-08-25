@@ -2,6 +2,7 @@
 const CONFIG = {
   SUPABASE_URL: 'https://fidrrkzbfjbhbkgmdtpb.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpZHJya3piZmpiaGJrZ21kdHBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0NTYxMTMsImV4cCI6MjEwMzAzMjExM30.9bya3Y6-giCxu64rEPb8EGrUx0Gj0xHWQR2IkpsC4XU',
+  WORKER_URL: 'https://studydash.sazindux.workers.dev',
 };
 const DAY_MS = 86_400_000, SLT_OFFSET = 5.5 * 3_600_000;
 const DAY_LIST = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -109,6 +110,8 @@ async function loadApp() {
   bindUI();
 
   await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid(), loadWeakTagsData()]);
+
+  checkAndShowAIMentor(); // fire-and-forget — never blocks the dashboard from rendering
 }
 
 function logout() { localStorage.removeItem('alt_token'); location.reload(); }
@@ -1376,6 +1379,7 @@ async function setStream(stream) {
 
 function bindUI() {
   $('btn-logout').onclick = logout;
+  $('ai-mentor-close')?.addEventListener('click', hideAIMentorCard);
   $('btn-settings').onclick = () => { renderSettingsPanel(); $('settings-backdrop').hidden = false; };
   $('settings-close').onclick = () => $('settings-backdrop').hidden = true;
   $('settings-backdrop').addEventListener('click', e => { if (e.target === $('settings-backdrop')) $('settings-backdrop').hidden = true; });
@@ -1504,4 +1508,73 @@ function setBtnLoading(btn, loading, label = 'Saving…') {
     if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
     delete btn.dataset.origHtml;
   }
+}
+
+/* ================= AI Mentor (Gemini-powered daily insight) ================= */
+
+let mentorTypeTimer = null;
+
+/**
+ * Once a day, ask the worker's /api/mentor endpoint for a short AI insight
+ * and show it in the glassmorphism popup. No-ops on repeat calls the same day.
+ */
+async function checkAndShowAIMentor() {
+  try {
+    if (!me || !CONFIG.WORKER_URL) return;
+
+    const today = sltDate();
+    const storageKey = `alt_lastAIPopupDate_${me.telegram_id}`;
+    if (localStorage.getItem(storageKey) === today) return; // already shown today
+
+    const token = localStorage.getItem('alt_token');
+    if (!token) return;
+
+    const res = await fetch(`${CONFIG.WORKER_URL}/api/mentor`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`mentor request failed: ${res.status}`);
+
+    const { message } = await res.json();
+    if (!message) return;
+
+    localStorage.setItem(storageKey, today); // mark as shown regardless — avoid retry storms
+    showAIMentorCard(message);
+  } catch (err) {
+    console.warn('AI mentor unavailable:', err); // silent failure — never interrupts the dashboard
+  }
+}
+
+function showAIMentorCard(message) {
+  const card = $('ai-mentor-card');
+  const textEl = $('ai-mentor-text');
+  if (!card || !textEl) return;
+
+  card.hidden = false;
+  card.classList.add('typing');
+  requestAnimationFrame(() => card.classList.add('show'));
+
+  typewriterEffect(textEl, message, 22, () => card.classList.remove('typing'));
+}
+
+function hideAIMentorCard() {
+  const card = $('ai-mentor-card');
+  if (!card) return;
+  clearInterval(mentorTypeTimer);
+  card.classList.remove('show');
+  setTimeout(() => { card.hidden = true; }, 400); // match CSS transition duration
+}
+
+/** Reveal `text` inside `el` one character at a time. Calls onDone() when finished. */
+function typewriterEffect(el, text, speed = 22, onDone) {
+  clearInterval(mentorTypeTimer);
+  el.textContent = '';
+  let i = 0;
+  mentorTypeTimer = setInterval(() => {
+    el.textContent += text.charAt(i);
+    i++;
+    if (i >= text.length) {
+      clearInterval(mentorTypeTimer);
+      onDone?.();
+    }
+  }, speed);
 }
