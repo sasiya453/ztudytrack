@@ -216,9 +216,11 @@ svg { display: block; }
 
 /* ---------- Past papers — progress-dot mini-cards ---------- */
 .progress-panel { padding: 16px 20px; }
+.progress-panel h2 { margin: 0; }
 .progress-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
 .progress-track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .progress-fill { height: 100%; background: var(--accent-grad); border-radius: 999px; transition: width .3s ease; }
+.progress-sub { color: var(--muted); font-size: .8rem; margin-top: 8px; }
 .hint { color: var(--muted); font-size: .8rem; margin-bottom: 14px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .hint-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--border); vertical-align: -1px; }
 .hint-dot.filled { background: var(--accent-a); border-color: var(--accent-a); }
@@ -245,6 +247,7 @@ svg { display: block; }
 .tab-btn { background: none; border: none; padding: 9px 4px; margin-right: 14px; color: var(--muted); font-weight: 600; font-size: .88rem; border-bottom: 2px solid transparent; }
 .tab-btn.active { color: var(--accent-a); border-bottom-color: var(--accent-a); }
 .entry-form { padding-top: 16px; }
+.form-note { color: var(--muted); font-size: .8rem; margin-bottom: 10px; }
 .form-row { display: flex; gap: 10px; margin-bottom: 4px; }
 .field-label { display: flex; flex-direction: column; gap: 6px; font-size: .8rem; font-weight: 600; color: var(--muted); flex: 1; }
 .field-label input {
@@ -330,6 +333,7 @@ svg { display: block; }
 }
 @keyframes slideIn { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 .side-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.side-head h2 { font-size: 1.05rem; }
 
 .day-picker-group { margin-bottom: 18px; }
 .day-picker-group .sr-name { display: block; font-weight: 600; font-size: .86rem; margin-bottom: 8px; }
@@ -346,9 +350,64 @@ svg { display: block; }
   padding: 11px 20px; border-radius: 999px; font-size: .85rem; box-shadow: var(--shadow); z-index: 99;
 }
 
+/* ============ NEW: Marks history (Telegram incoming-bubble style) ============ */
+#marks-history-summary { text-transform: none; letter-spacing: normal; font-weight: 600; }
+
+.marks-history {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 340px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 2px 2px 6px; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+.marks-history::-webkit-scrollbar { width: 6px; }
+.marks-history::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+
+.mh-bubble {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bubble-in); border: 1px solid var(--border);
+  border-radius: 16px 16px 16px 4px;            /* incoming-bubble tail, mirrors .log-bubble */
+  padding: 9px 12px; box-shadow: var(--shadow);
+  animation: mhIn .18s ease both;
+}
+@keyframes mhIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.mh-week {
+  flex-shrink: 0; min-width: 44px; text-align: center; font-size: .72rem; font-weight: 700;
+  color: var(--accent-a); background: var(--accent-soft); border-radius: 999px; padding: 4px 8px;
+}
+.mh-marks { font-size: 1.02rem; font-weight: 700; }
+.mh-marks small { font-size: .72rem; font-weight: 500; color: var(--muted); }
+.mh-bubble.mh-is-absent .mh-marks { color: var(--amber); font-size: .88rem; }
+.mh-grade { flex-shrink: 0; font-size: .72rem; font-weight: 800; padding: 3px 9px; border-radius: 7px; letter-spacing: .03em; }
+
+.mh-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.mh-btn {
+  width: 32px; height: 32px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  display: grid; place-items: center; transition: .15s;
+}
+.mh-btn:hover { color: var(--accent-a); border-color: var(--accent-a); }
+.mh-btn.mh-del:hover { color: var(--danger); border-color: var(--danger); }
+/* two-tap delete confirm state */
+.mh-btn.mh-armed {
+  width: auto; min-width: 32px; padding: 0 11px; border-radius: 999px;
+  background: var(--danger); border-color: var(--danger); color: #fff;
+  font-size: .74rem; font-weight: 700;
+}
+.mh-bubble.mh-deleting { opacity: .45; pointer-events: none; }
+
+/* ============ NEW: Button loading spinner ============ */
+.btn-spinner {
+  display: inline-block; width: 14px; height: 14px; margin-right: 7px; vertical-align: -2px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.primary-btn:disabled, .ghost-btn:disabled { opacity: .65; cursor: default; }
+
 @media (max-width: 600px) {
   .stat-value { font-size: 1.4rem; }
   .user-chip span:not(.ic-sun):not(.ic-moon) { display: none; }
   .user-chip { padding: 5px; }
 }
-
