@@ -216,17 +216,34 @@ svg { display: block; }
 .grade-legend span { display: flex; align-items: center; gap: 5px; }
 .gl-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
-/* ---------- Log feed (chat-bubble style) ---------- */
+/* ---------- Log feed (clean card rows — same language as marks history) ---------- */
 .log-feed { display: flex; flex-direction: column; gap: 10px; }
 .log-empty { color: var(--muted); text-align: center; padding: 18px; font-size: .88rem; }
 .log-bubble {
-  align-self: flex-end; max-width: 82%; background: var(--accent-grad); color: #fff;
-  padding: 10px 14px; border-radius: 16px 16px 4px 16px; box-shadow: var(--shadow);
-  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bubble-in); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px 14px; box-shadow: var(--shadow);
+  cursor: pointer; transition: border-color .15s;
+  animation: lbIn .18s ease both;
 }
-.log-bubble .lb-hours { font-weight: 700; }
-.log-bubble .lb-meta { font-size: .74rem; opacity: .85; flex: 1; }
-.log-bubble .lb-edit { opacity: .85; flex-shrink: 0; }
+@keyframes lbIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.log-bubble:hover { border-color: var(--accent-a); }
+/* NOTE: scoped under .log-bubble — .lb-hours is also used by the leaderboard. */
+.log-bubble .lb-hours {
+  flex-shrink: 0; min-width: 52px; text-align: center;
+  font-size: .92rem; font-weight: 800; color: var(--accent-a);
+  background: var(--accent-soft); border-radius: 999px; padding: 6px 11px;
+}
+.log-bubble .lb-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.log-bubble .lb-date { font-weight: 600; font-size: .88rem; }
+.log-bubble .lb-subjects { display: flex; flex-wrap: wrap; gap: 3px 10px; }
+.log-bubble .lb-subj {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .74rem; font-weight: 500; color: var(--muted);
+}
+.log-bubble .lb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.log-bubble .lb-edit { color: var(--muted); flex-shrink: 0; transition: color .15s; }
+.log-bubble:hover .lb-edit { color: var(--accent-a); }
 
 /* ---------- Past papers — progress-dot mini-cards ---------- */
 .progress-panel { padding: 16px 20px; }
@@ -463,10 +480,34 @@ svg { display: block; }
    this just avoids the chunky native scrollbar some browsers render inconsistently. */
 .marks-history::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
-/* Inside the marks-history sheet the sheet itself is the scroller
-   (.sheet { max-height: 88vh; overflow-y: auto }) — the dashboard's 360px
-   inner cap would nest a second scrollbar inside the modal. */
-#marks-history-sheet .marks-history { max-height: none; }
+/* ---- Modal scrolling fix (marks history sheet) ----
+   The LIST is the only scroller. The old max-height:none pushed scrolling up
+   to the .sheet itself — a nested scroll region that broke the mouse wheel
+   over the list and showed the sheet's default scrollbar. The list is now
+   capped to (sheet's 88vh − handle/header/padding ≈ 150px) so the sheet never
+   overflows; overscroll-behavior: contain stops the wheel from chaining to
+   the page behind the backdrop, and the scrollbar is fully hidden while
+   wheel/touch scrolling stays intact. */
+#marks-history-sheet .sheet { overflow-y: hidden; }
+#marks-history-sheet .marks-history {
+  max-height: calc(88vh - 150px);   /* ≈80vh-class cap, minus sheet chrome */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* old Edge/IE */
+}
+#marks-history-sheet .marks-history::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* Same single-scroller treatment for the recent-activity sheet's list. */
+#activity-sheet .sheet { overflow-y: hidden; }
+#activity-sheet .log-feed {
+  max-height: calc(88vh - 150px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#activity-sheet .log-feed::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 .mh-bubble {
   display: flex; flex-direction: column; gap: 9px;
