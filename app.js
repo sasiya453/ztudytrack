@@ -23,7 +23,7 @@ const SETTINGS_COLUMNS = {
 let db = null, me = null, settings = null;
 let activePaperSubject = null, activeMarksSubject = null, activeLbPeriod = 'yesterday';
 let activeRange = 14, activeChartType = 'bar';
-let growthChart = null, donutChart = null, marksChart = null;
+let growthChart = null, donutChart = null, marksChart = null, analyzeChart = null;
 let editingDate = null, logHours = 0;
 let marksActiveTab = 'single', marksEntrySubject = null;
 let marksHistoryRows = [];        // latest model_papers fetch for the active subject
@@ -168,7 +168,7 @@ async function updateGrowthChart() {
 
 function chartColors() {
   const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  return { grid: dark ? '#22303C' : '#E3E7EC', text: dark ? '#8B98A5' : '#707579' };
+  return { grid: dark ? '#22303C' : '#E3E7EC', text: dark ? '#8B98A5' : '#707579', cardBg: dark ? '#17212B' : '#FFFFFF' };
 }
 
 function renderGrowthChart(labels, daily, cumulative) {
@@ -181,18 +181,21 @@ function renderGrowthChart(labels, daily, cumulative) {
     dataset = { type: 'bar', label: 'Hours / day', data: daily, backgroundColor: '#2AABEE', borderRadius: 6, maxBarThickness: 22 };
   } else {
     const grad = ctx.createLinearGradient(0, 0, 0, 240);
-    grad.addColorStop(0, 'rgba(63,198,90,.28)'); grad.addColorStop(1, 'rgba(63,198,90,0)');
-    dataset = { type: 'line', label: 'Cumulative hours', data: cumulative, borderColor: '#3FC65A',
-      backgroundColor: grad, fill: true, tension: .35, pointRadius: labels.length > 40 ? 0 : 3 };
+    grad.addColorStop(0, 'rgba(42,171,238,.32)'); grad.addColorStop(1, 'rgba(42,171,238,0)');
+    dataset = { type: 'line', label: 'Cumulative hours', data: cumulative, borderColor: '#2AABEE', borderWidth: 3,
+      backgroundColor: grad, fill: true, tension: .45, cubicInterpolationMode: 'monotone',
+      pointRadius: labels.length > 40 ? 0 : 3, pointHoverRadius: 6,
+      pointBackgroundColor: '#2AABEE', pointBorderColor: c.cardBg, pointBorderWidth: 2 };
   }
 
   growthChart = new Chart(ctx, {
     data: { labels, datasets: [dataset] },
     options: {
       responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
       scales: {
         x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: c.text }, grid: { color: c.grid } },
+        y: { beginAtZero: true, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } },
       },
       plugins: { legend: { display: false } },
     },
@@ -403,24 +406,27 @@ function sltWeekNumber() {
 
 async function renderMarksPanel() {
   const subject = activeMarksSubject;
+  const analyzeLabel = $('analyze-subject-label');
+  if (analyzeLabel) analyzeLabel.textContent = `— ${subject}`;
 
-  // Fetch ALL weeks for this subject (~53 rows max) — used for both the
-  // history list AND the chart, so the two can never disagree.
+  // Fetch ALL weeks for this subject (~53 rows max) — used for the history
+  // list, the marks chart, AND the Essay/MCQ analyze chart below, so none
+  // of the three can ever disagree with each other.
   const { data, error } = await db.from('model_papers')
-    .select('week_number, marks, is_absent').eq('subject', subject)
+    .select('week_number, marks, essay_marks, mcq_marks, is_absent').eq('subject', subject)
     .order('week_number', { ascending: false });
   if (error) { toast('Could not load marks 😕'); return; }
   marksHistoryRows = data || [];
 
-  // FIX: chart now plots every scored entry (sorted oldest -> newest),
-  // not just weeks inside a trailing 12-week "current calendar week" window.
-  // That window silently dropped any week you typed by hand that fell
-  // outside it, which is why only the first entry ever showed up.
+  // Chart plots every scored entry (sorted oldest -> newest), not just
+  // weeks inside a trailing "current calendar week" window — any week you
+  // typed by hand outside that window used to be silently dropped.
   const scoredAsc = [...marksHistoryRows]
     .filter(r => !r.is_absent && r.marks !== null)
     .sort((a, b) => a.week_number - b.week_number);
   const chartLabels = scoredAsc.map(r => `W${r.week_number}`);
   const chartData = scoredAsc.map(r => +r.marks);
+  const pointColors = chartData.map(gradeHex);
 
   marksChart?.destroy();
   const c = chartColors();
@@ -428,11 +434,15 @@ async function renderMarksPanel() {
   marksChart = new Chart(ctx, {
     type: 'line',
     data: { labels: chartLabels, datasets: [{ label: `${subject} marks`, data: chartData,
-      borderColor: SUBJECT_COLORS[subject] || '#2AABEE', backgroundColor: 'transparent', tension: .3, pointRadius: 4 }] },
+      borderColor: SUBJECT_COLORS[subject] || '#2AABEE', backgroundColor: 'transparent',
+      tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2.5,
+      pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: pointColors,
+      pointBorderColor: c.cardBg, pointBorderWidth: 2 }] },
     options: {
       responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
       scales: { x: { ticks: { color: c.text }, grid: { display: false } },
-                y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid } } },
+                y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
       plugins: { legend: { display: false } },
       layout: { padding: { right: 18 } },
     },
@@ -440,6 +450,16 @@ async function renderMarksPanel() {
   });
 
   renderMarksHistory();
+  renderAnalyzeChart(scoredAsc);
+}
+
+/** Canvas-safe hex for a mark value — same thresholds as gradeBandsPlugin/gradeFor. */
+function gradeHex(marks) {
+  if (marks >= 75) return '#3FC65A';
+  if (marks >= 65) return '#2AABEE';
+  if (marks >= 55) return '#F5A623';
+  if (marks >= 35) return '#F5A623';
+  return '#E5473C';
 }
 
 /** A/L grading bands drawn behind the marks line: A 75+, B 65-74, C 55-64, S 35-54, W <35 */
@@ -469,12 +489,58 @@ const gradeBandsPlugin = {
   },
 };
 
-async function saveMarks(subject, week, marks, isAbsent) {
+async function saveMarks(subject, week, marks, isAbsent, essay = null, mcq = null) {
   const body = { user_id: me.telegram_id, subject, week_number: week,
-    marks: isAbsent ? null : (isNaN(marks) ? null : marks), is_absent: isAbsent };
+    marks: isAbsent ? null : (isNaN(marks) ? null : marks),
+    essay_marks: isAbsent || essay === null || isNaN(essay) ? null : essay,
+    mcq_marks: isAbsent || mcq === null || isNaN(mcq) ? null : mcq,
+    is_absent: isAbsent };
   const { error } = await db.from('model_papers').upsert(body, { onConflict: 'user_id,subject,week_number' });
   if (error) { toast('Update failed 😕'); return false; }
   return true;
+}
+
+/* ---------------- Paper marks analyze (Essay / MCQ / Total) ---------------- */
+
+function renderAnalyzeChart(scoredAsc) {
+  const withBreakdown = scoredAsc.filter(r => r.essay_marks !== null || r.mcq_marks !== null);
+  analyzeChart?.destroy();
+
+  if (!withBreakdown.length) {
+    $('analyzeChart').style.display = 'none';
+    $('analyze-legend').hidden = true;
+    $('analyze-empty').hidden = false;
+    return;
+  }
+  $('analyzeChart').style.display = 'block';
+  $('analyze-legend').hidden = false;
+  $('analyze-empty').hidden = true;
+
+  const c = chartColors();
+  const ctx = $('analyzeChart').getContext('2d');
+  const labels = withBreakdown.map(r => `W${r.week_number}`);
+  const mk = (data, color, alpha) => {
+    const grad = ctx.createLinearGradient(0, 0, 0, 200);
+    grad.addColorStop(0, `${color}${alpha}`); grad.addColorStop(1, `${color}00`);
+    return { data, borderColor: color, backgroundColor: grad, fill: true,
+      tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2, pointRadius: 3, pointHoverRadius: 5 };
+  };
+  analyzeChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Essay', ...mk(withBreakdown.map(r => r.essay_marks ?? null), '#F5A623', '29') },
+      { label: 'MCQ',   ...mk(withBreakdown.map(r => r.mcq_marks ?? null),   '#3FC65A', '29') },
+      { label: 'Total', ...mk(withBreakdown.map(r => +r.marks),              '#2AABEE', '1F') },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      spanGaps: true,
+      scales: { x: { ticks: { color: c.text }, grid: { display: false } },
+                y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
+      plugins: { legend: { display: false } },
+    },
+  });
 }
 
 /* ---------------- Marks history list (edit / delete) ---------------- */
@@ -523,17 +589,25 @@ function renderMarksHistory() {
   wrap.innerHTML = rows.map(r => {
     if (r.is_absent || r.marks === null) {
       return `<div class="mh-bubble mh-is-absent" data-week="${r.week_number}">
-        <span class="mh-week">W${r.week_number}</span>
-        <span class="mh-marks">Absent</span>
-        ${actions(r)}
+        <div class="mh-top">
+          <span class="mh-week">W${r.week_number}</span>
+          <span class="mh-marks">Absent</span>
+          ${actions(r)}
+        </div>
+        <div class="mh-track"><div class="mh-fill" style="width:0%"></div></div>
       </div>`;
     }
-    const g = gradeFor(+r.marks);
+    const pct = +r.marks;
+    const color = gradeHex(pct);
+    const g = gradeFor(pct);
     return `<div class="mh-bubble" data-week="${r.week_number}">
-      <span class="mh-week">W${r.week_number}</span>
-      <span class="mh-marks">${+r.marks}<small>/100</small></span>
-      <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
-      ${actions(r)}
+      <div class="mh-top">
+        <span class="mh-week">W${r.week_number}</span>
+        <span class="mh-marks">${pct}<small>/100</small></span>
+        <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
+        ${actions(r)}
+      </div>
+      <div class="mh-track"><div class="mh-fill" style="width:${pct}%; background:${color}"></div></div>
     </div>`;
   }).join('');
 }
@@ -595,6 +669,8 @@ function openMarksSheet(editWeek = null) {
   $('marks-sheet-subject').textContent = `— ${marksEntrySubject}`;
   $('single-week').value   = editing ? editing.week_number : sltWeekNumber();
   $('single-marks').value  = (editing && editing.marks !== null && editing.marks !== undefined) ? editing.marks : '';
+  $('single-essay').value  = (editing && editing.essay_marks !== null && editing.essay_marks !== undefined) ? editing.essay_marks : '';
+  $('single-mcq').value    = (editing && editing.mcq_marks !== null && editing.mcq_marks !== undefined) ? editing.mcq_marks : '';
   $('single-absent').checked = !!(editing && editing.is_absent);
   resetBulkRows();
   switchMarksTab('single');
@@ -645,9 +721,15 @@ async function saveMarksEntry() {
       const week = +$('single-week').value;
       const isAbsent = $('single-absent').checked;
       const marks = parseFloat($('single-marks').value);
+      const essayRaw = $('single-essay').value.trim();
+      const mcqRaw = $('single-mcq').value.trim();
+      const essay = essayRaw === '' ? null : parseFloat(essayRaw);
+      const mcq = mcqRaw === '' ? null : parseFloat(mcqRaw);
       if (!week || week < 1 || week > 53) { toast('Enter a valid week number'); return; }
       if (!isAbsent && (isNaN(marks) || marks < 0 || marks > 100)) { toast('Enter marks between 0 and 100'); return; }
-      const ok = await saveMarks(marksEntrySubject, week, marks, isAbsent);
+      if (essay !== null && (isNaN(essay) || essay < 0 || essay > 100)) { toast('Essay marks must be 0–100'); return; }
+      if (mcq !== null && (isNaN(mcq) || mcq < 0 || mcq > 100)) { toast('MCQ marks must be 0–100'); return; }
+      const ok = await saveMarks(marksEntrySubject, week, marks, isAbsent, essay, mcq);
       if (!ok) return;
     } else {
       const rows = [...$('bulk-rows').querySelectorAll('.bulk-row')]
@@ -844,6 +926,7 @@ function bindUI() {
   });
 
   $('fab-log').onclick = () => openLogSheet(sltDate());
+  $('growth-log-today').onclick = () => openLogSheet(sltDate());
   $('log-cancel').onclick = closeLogSheet;
   $('log-sheet').addEventListener('click', e => { if (e.target === $('log-sheet')) closeLogSheet(); });
   $('log-save').onclick = saveLog;
