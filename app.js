@@ -765,7 +765,9 @@ function buildPaperSubjectTabs() {
 }
 
 async function renderPaperGrid() {
-  const currentYear = Math.min(new Date().getFullYear(), 2025);
+  // Small headroom above the real current year so new A/L years show up
+  // automatically without needing another code change each January.
+  const currentYear = Math.min(new Date().getFullYear(), 2030);
   const totalYears = currentYear - 2000 + 1;
   const { data: papers } = await db.from('past_papers')
     .select('year, attempt_number').eq('subject', activePaperSubject);
