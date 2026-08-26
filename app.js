@@ -2,7 +2,11 @@
 const CONFIG = {
   SUPABASE_URL: 'https://fidrrkzbfjbhbkgmdtpb.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpZHJya3piZmpiaGJrZ21kdHBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0NTYxMTMsImV4cCI6MjEwMzAzMjExM30.9bya3Y6-giCxu64rEPb8EGrUx0Gj0xHWQR2IkpsC4XU',
-  WORKER_URL: 'https://studydash.sazindux.workers.dev',
+  // Same backend that already issues the #auth=<jwt> token for the Telegram
+  // Login Widget (see index.html). It needs one more route added — see the
+  // note above bootTelegramWebApp() below — that verifies WebApp initData
+  // and returns { token } in the same JWT shape.
+  TELEGRAM_WEBAPP_AUTH_URL: 'https://studydash.sazindux.workers.dev/api/telegram-webapp-auth',
 };
 const DAY_MS = 86_400_000, SLT_OFFSET = 5.5 * 3_600_000;
 const DAY_LIST = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -16,6 +20,10 @@ const SUBJECT_COLORS = {
   'Physics':        '#F5A623',
   'Chemistry':      '#9B6BFF',
 };
+const SETTINGS_COLUMNS = {
+  'Combined Maths': 'maths_class_day', 'Bio': 'maths_class_day',
+  'Physics': 'physics_class_day', 'Chemistry': 'chemistry_class_day',
+};
 
 let db = null, me = null, settings = null;
 let activePaperSubject = null, activeMarksSubject = null, activeLbPeriod = 'yesterday';
@@ -23,60 +31,86 @@ let activeRange = 14, activeChartType = 'bar';
 let growthChart = null, donutChart = null, marksChart = null, analyzeChart = null;
 let editingDate = null, logHours = 0;
 let marksActiveTab = 'single', marksEntrySubject = null;
-let marksHistoryRows = [];        
-let marksSaveDefaultHtml = null;  
-let attemptEntryYear = null, attemptEntryRound = null; 
-let attemptSaveDefaultHtml = null;                     
+let marksHistoryRows = [];        // latest model_papers fetch for the active subject
+let marksSaveDefaultHtml = null;  // pristine "Save" button markup (restored after edit mode)
+let attemptEntryYear = null, attemptEntryRound = null; // paper-attempt sheet state
+let attemptSaveDefaultHtml = null;                     // pristine "Save round" markup
 
-let paperAttemptsByYear = new Map(); 
-let expandedPaperYear = null;        
-let miniChart = null;                
-let weakTagPool = [];                
-let selectedWeakTags = [];           
-
-const PAPER_ROUNDS = 5;
+// ---- Past-paper attempt tracker (marks / time / weak-unit tags) ----
+let paperAttemptsByYear = new Map(); // year -> paper_attempts rows, for activePaperSubject
+let expandedPaperYear = null;        // year currently expanded in the paper grid (accordion — one at a time)
+let miniChart = null;                // Chart.js instance for the expanded card's mini progression chart
+let weakTagPool = [];                // this user's previously-used weak-unit tags, across all subjects (autocomplete source)
+let selectedWeakTags = [];           // chips currently staged in the open attempt-log form
 
 const $ = id => document.getElementById(id);
 const sltDate = (d = new Date()) => new Date(d.getTime() + SLT_OFFSET).toISOString().slice(0, 10);
 const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-function haptic(type = 'light') {
-  try { window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.(type); } catch {}
+/* ---------------- Bottom sheets (generic open/close with animation) ----------------
+   Every bottom sheet is `<div class="sheet-backdrop" hidden><div class="sheet">…`.
+   `hidden` fully removes it from layout/hit-testing; `.open` is what actually
+   drives the CSS transition (see .sheet-backdrop / .sheet in styles.css). To
+   animate IN we have to unhide first, force a reflow, then add `.open` on the
+   next frame — otherwise the browser coalesces "display:none → translateY(0)"
+   into one paint and there's nothing to transition from. To animate OUT we
+   remove `.open` and only set `hidden` back once the transition finishes
+   (with a timeout fallback in case transitionend never fires). */
+function openSheet(id) {
+  const backdrop = $(id);
+  if (!backdrop) return;
+  backdrop.hidden = false;
+  void backdrop.offsetHeight; // force reflow so the closed state paints first
+  requestAnimationFrame(() => backdrop.classList.add('open'));
+}
+function closeSheet(id) {
+  const backdrop = $(id);
+  if (!backdrop || backdrop.hidden) return;
+  const sheet = backdrop.querySelector('.sheet');
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    backdrop.hidden = true;
+    sheet?.removeEventListener('transitionend', onEnd);
+  };
+  const onEnd = e => { if (e.target === sheet && e.propertyName === 'transform') finish(); };
+  sheet?.addEventListener('transitionend', onEnd);
+  setTimeout(finish, 400); // fallback if transitionend doesn't fire
+  backdrop.classList.remove('open');
 }
 
-/* ---- ANIMATIONS: Staggered Loading & Smooth Bottom Sheets ---- */
-function staggerChildren(wrap) {
-  if (!wrap) return;
-  const children = Array.from(wrap.children);
-  children.forEach((child, i) => {
-    child.style.opacity = '0';
-    child.style.animation = `mhIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards ${i * 0.05}s`;
+/* ---------------- Tab panels (Dashboard / Papers / Leaderboard) ---------------- */
+const TAB_PANELS = { dashboard: 'tab-dashboard', papers: 'tab-papers', leaderboard: 'tab-leaderboard' };
+function switchTab(tab) {
+  Object.entries(TAB_PANELS).forEach(([name, id]) => {
+    const panel = $(id);
+    if (!panel) return;
+    if (name === tab) {
+      panel.hidden = false;
+      panel.classList.remove('tab-panel-in');
+      void panel.offsetHeight; // restart the animation even if this tab was shown before
+      panel.classList.add('tab-panel-in');
+    } else {
+      panel.hidden = true;
+    }
   });
 }
 
-function openSheet(id) {
-  const bd = $(id);
-  if (!bd) return;
-  bd.hidden = false;
-  haptic('light');
-}
-
-function closeSheet(id) {
-  const bd = $(id);
-  if (!bd) return;
-  const sheet = bd.querySelector('.sheet');
-  if (sheet) sheet.style.animation = 'sheetSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards';
-  bd.style.animation = 'backdropFadeOut 0.3s ease forwards';
-  setTimeout(() => {
-    bd.hidden = true;
-    if (sheet) sheet.style.animation = '';
-    bd.style.animation = '';
-  }, 300);
+/* ---------------- Staggered list entrances ----------------
+   Sets --i on each item so styles.css can stagger the fade-in-up via
+   `animation-delay: calc(var(--i) * 12ms)`. Capped so a long list (e.g.
+   marks history) doesn't push the last item's delay out for seconds. */
+function staggerItems(container, selector, cap = 8) {
+  container?.querySelectorAll(selector).forEach((el, i) => {
+    el.style.setProperty('--i', Math.min(i, cap));
+  });
 }
 
 /* ---------------- Theme ---------------- */
 function initTheme() {
-  const saved = localStorage.getItem('alt_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const saved = localStorage.getItem('alt_theme')
+    || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', saved);
 }
 function toggleTheme() {
@@ -88,55 +122,124 @@ function toggleTheme() {
 initTheme();
 
 /* ---------------- Boot & auth ---------------- */
+// Works whether app.js loads before or after DOMContentLoaded.
 if (document.readyState === 'loading') {
   window.addEventListener('DOMContentLoaded', boot);
 } else {
   boot();
 }
 
-async function boot() {
+function boot() {
   $('theme-toggle-login')?.addEventListener('click', toggleTheme);
   $('theme-toggle')?.addEventListener('click', toggleTheme);
 
+  // ---- Mode detection: Telegram Mini App vs regular browser ----
   const tgApp = window.Telegram?.WebApp;
   const tgUser = tgApp?.initDataUnsafe?.user;
 
-  if (tgUser) {
-    try {
-      const res = await fetch(`${CONFIG.WORKER_URL}/api/telegram-webapp-auth`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: tgApp.initData })
-      });
-      if (!res.ok) throw new Error('Telegram Auth Failed');
-      const { token } = await res.json();
-      localStorage.setItem('alt_token', token);
-      setupSupabaseClient(token);
-      await loadApp();
-    } catch (err) {
-      console.error(err);
-      $('login-view').hidden = false; 
-    }
-  } else {
-    const hash = new URLSearchParams(location.hash.slice(1)).get('auth');
-    const token = hash || localStorage.getItem('alt_token');
-    history.replaceState(null, '', location.pathname);
-    
-    if (token) {
-      localStorage.setItem('alt_token', token);
-      setupSupabaseClient(token);
-      await loadApp().catch(err => { console.error(err); logout(); });
-    } else {
-      $('login-view').hidden = false;
-    }
+  if (tgApp && tgUser) {
+    tgApp.ready();
+    tgApp.expand();
+    bootTelegramWebApp(tgApp);
+    return; // never render #login-view / the Telegram Login Widget in this mode
   }
+
+  // ---- Regular browser fallback: existing alt_token / #auth flow ----
+  const hash = new URLSearchParams(location.hash.slice(1)).get('auth');
+  const token = hash || localStorage.getItem('alt_token');
+  history.replaceState(null, '', location.pathname);
+  if (!token) return; // #login-view (with the Telegram Login Widget) stays visible
+
+  localStorage.setItem('alt_token', token);
+  initSupabase(token);
+  loadApp().catch(err => { console.error(err); logout(); });
 }
 
-function setupSupabaseClient(token) {
+function initSupabase(token) {
   db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false },
   });
+}
+
+/* ---------------- Telegram Mini App auto-login ----------------
+ * `initDataUnsafe` is UNVERIFIED — its name says so. Any page can define a
+ * fake `window.Telegram.WebApp` object and claim to be any user, so it is
+ * only used here for an optimistic "Signing you in as …" label. It is
+ * NEVER used to authenticate, to decide `telegram_id`, or to write to the
+ * `users` table directly with the anon key.
+ *
+ * The actual login always goes through `tgApp.initData` — the raw, signed
+ * string Telegram provides — sent to a backend endpoint that verifies its
+ * HMAC-SHA-256 signature against the bot token (per Telegram's WebApp auth
+ * spec) before minting the same kind of Supabase JWT the Login Widget flow
+ * already uses (see CONFIG.TELEGRAM_WEBAPP_AUTH_URL and the worker snippet
+ * below). That backend call is what makes this "instant" from the user's
+ * perspective — typically well under a second — while keeping the same
+ * security guarantee as the widget flow: nobody can mint a session for a
+ * `telegram_id` they don't control.
+ */
+async function bootTelegramWebApp(tgApp) {
+  const tgUser = tgApp.initDataUnsafe.user;
+  showTelegramBoot(tgUser);
+
+  // Fast path: reuse a still-valid cached token so returning users skip the
+  // network round trip entirely.
+  const cached = localStorage.getItem('alt_token');
+  if (cached && !isTokenExpired(cached)) {
+    initSupabase(cached);
+    try { await loadApp(); return; } catch (err) { console.error(err); localStorage.removeItem('alt_token'); }
+  }
+
+  try {
+    const res = await fetch(CONFIG.TELEGRAM_WEBAPP_AUTH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: tgApp.initData }), // raw signed string, verified server-side
+    });
+    if (!res.ok) throw new Error(`telegram-webapp-auth ${res.status}`);
+    const { token } = await res.json();
+    if (!token) throw new Error('telegram-webapp-auth: no token in response');
+
+    localStorage.setItem('alt_token', token);
+    initSupabase(token);
+
+    // Keep the profile fresh. Safe to do with the anon key here because
+    // `token` is now a verified JWT carrying `telegram_id` as a claim, and
+    // RLS on `users` should restrict writes to `telegram_id = auth.telegram_id()`
+    // (i.e. a user can only ever upsert their own row).
+    await db.from('users').upsert({
+      telegram_id: tgUser.id,
+      name: [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' '),
+      photo_url: tgUser.photo_url || null,
+    }, { onConflict: 'telegram_id' });
+
+    await loadApp();
+  } catch (err) {
+    console.error('Telegram Mini App auto-login failed, falling back to login widget', err);
+    hideTelegramBoot();
+    $('login-view').hidden = false; // regular Telegram Login Widget flow as a safety net
+  }
+}
+
+function isTokenExpired(token) {
+  try {
+    const { exp } = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return !exp || Date.now() >= exp * 1000;
+  } catch { return true; }
+}
+
+function showTelegramBoot(tgUser) {
+  const el = $('tg-boot');
+  if (!el) return; // markup not added to index.html — degrades to a blank screen briefly
+  const name = [tgUser?.first_name, tgUser?.last_name].filter(Boolean).join(' ');
+  const status = $('tg-boot-status');
+  if (status) status.textContent = name ? `Signing you in as ${name}…` : 'Signing you in…';
+  el.hidden = false;
+}
+function hideTelegramBoot() {
+  const el = $('tg-boot');
+  if (el) el.hidden = true;
 }
 
 async function loadApp() {
@@ -156,6 +259,7 @@ async function loadApp() {
   activePaperSubject = STREAM_SUBJECTS[settings.stream][0];
   activeMarksSubject = STREAM_SUBJECTS[settings.stream][0];
 
+  hideTelegramBoot();
   $('login-view').hidden = true;
   $('app-view').hidden = false;
   $('user-name').textContent = me.name.split(' ')[0];
@@ -167,42 +271,11 @@ async function loadApp() {
   bindUI();
 
   await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid(), loadWeakTagsData()]);
-
-  checkAndShowAIMentor();
 }
 
 function logout() { localStorage.removeItem('alt_token'); location.reload(); }
 
 /* ================= OVERVIEW: stats + growth chart ================= */
-
-const CHART_EVENTS = ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove', 'touchend'];
-const TOUCH_TOOLTIP_OPTS = {
-  mode: 'index',
-  intersect: false,
-  animation: { duration: 100 },
-};
-
-function dismissChartTooltip(chart) {
-  if (!chart) return;
-  const showing = (chart.getActiveElements?.().length || 0) > 0
-    || (chart.tooltip?.getActiveElements?.().length || 0) > 0;
-  if (!showing) return;
-  chart.setActiveElements([]);
-  chart.tooltip?.setActiveElements?.([], { x: 0, y: 0 });
-  chart.update('none');
-}
-
-function bindTooltipDismiss(chart) {
-  const cv = chart?.canvas;
-  if (!cv || cv._dismissBound) return;
-  cv._dismissBound = true;
-  cv.addEventListener('touchend', e => {
-    e.preventDefault();
-    dismissChartTooltip(chart);
-  }, { passive: false });
-  cv.addEventListener('touchcancel', () => dismissChartTooltip(chart), { passive: true });
-  cv.addEventListener('mouseleave', () => dismissChartTooltip(chart), { passive: true });
-}
 
 async function loadStats() {
   const from = sltDate(new Date(Date.now() - 29 * DAY_MS));
@@ -220,8 +293,12 @@ async function loadStats() {
   $('stat-week').innerHTML  = `${last7.toFixed(1)}<span class="unit">h</span>`;
   $('stat-avg').innerHTML   = `${(last7 / 7).toFixed(1)}<span class="unit">h</span>`;
 
-  const dOrder = [...values30].reverse();
-  let start = dOrder[0] === 0 ? 1 : 0;
+  // streak: consecutive days with hours > 0, counting back from today.
+  // FIX: if today isn't logged yet, skip it and count from yesterday
+  // (previously the streak showed 0 even when yesterday was logged).
+  const dOrder = [...values30].reverse(); // index 0 = today
+  let start = 0;
+  if (dOrder[0] === 0) start = 1;
   let streak = 0;
   for (let i = start; i < dOrder.length && dOrder[i] > 0; i++) streak++;
   $('stat-streak').innerHTML = `${streak}<span class="unit">🔥</span>`;
@@ -286,16 +363,14 @@ function renderGrowthChart(labels, daily, cumulative) {
     data: { labels, datasets: [dataset] },
     options: {
       responsive: true, maintainAspectRatio: false,
-      events: CHART_EVENTS,
       interaction: { intersect: false, mode: 'index' },
       scales: {
         x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
         y: { beginAtZero: true, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } },
       },
-      plugins: { legend: { display: false }, tooltip: TOUCH_TOOLTIP_OPTS },
+      plugins: { legend: { display: false } },
     },
   });
-  bindTooltipDismiss(growthChart);
 }
 
 /* ================= Subject donut ================= */
@@ -307,12 +382,14 @@ async function loadDonut() {
 
   const totals = {};
   for (const r of (data || [])) totals[r.subject] = (totals[r.subject] || 0) + +r.study_hours;
+  // FIX: sort BEFORE building the chart so legend order matches segment order.
   const entries = Object.entries(totals).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
 
   donutChart?.destroy();
+  const c = chartColors();
   const donutBox = $('subjectDonut').closest('.chart-box');
   if (!entries.length) {
-    $('donut-legend').innerHTML = '<li class="donut-empty">No per-subject hours logged in the last 30 days yet.</li>';
+    $('donut-legend').innerHTML = '<li class="donut-empty">No per-subject hours logged in the last 30 days yet — split your hours next time you log.</li>';
     donutBox.style.display = 'none';
     return;
   }
@@ -322,10 +399,8 @@ async function loadDonut() {
     type: 'doughnut',
     data: { labels: entries.map(e => e[0]), datasets: [{ data: entries.map(e => +e[1].toFixed(1)),
       backgroundColor: entries.map(e => SUBJECT_COLORS[e[0]] || '#94a3b8'), borderWidth: 0 }] },
-    options: { plugins: { legend: { display: false }, tooltip: { ...TOUCH_TOOLTIP_OPTS, mode: 'nearest', intersect: true } }, cutout: '68%' },
+    options: { plugins: { legend: { display: false } }, cutout: '68%' },
   });
-  bindTooltipDismiss(donutChart);
-  
   $('donut-legend').innerHTML = entries.map(([name, hrs]) => `
     <li><span class="sw" style="background:${SUBJECT_COLORS[name] || '#94a3b8'}"></span>
       <span class="lg-name">${escapeHtml(name)}</span><span class="lg-val">${hrs.toFixed(1)}h</span></li>`).join('');
@@ -371,10 +446,12 @@ async function loadLogFeed() {
   const entries = [...byDate.entries()].filter(([, v]) => v.total !== null).slice(0, 8);
   const feed = $('log-feed');
   if (!entries.length) {
-    feed.innerHTML = '<div class="log-empty">No study hours logged yet.</div>';
+    feed.innerHTML = '<div class="log-empty">No study hours logged yet — tap the + button to add today\'s hours.</div>';
     return;
   }
   feed.innerHTML = entries.map(([date, v]) => {
+    // One chip per split subject with a tiny dot in that subject's color
+    // (SUBJECT_COLORS, grey fallback), shown under the date line.
     const subjects = Object.entries(v.subjects).map(([s, h]) => {
       const color = SUBJECT_COLORS[s] || '#94a3b8';
       return `<span class="lb-subj"><i class="lb-dot" style="background:${color}"></i>${escapeHtml(s)} ${h}h</span>`;
@@ -388,9 +465,8 @@ async function loadLogFeed() {
       <svg class="lb-edit" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
     </div>`;
   }).join('');
-  
   feed.querySelectorAll('.log-bubble').forEach(el => el.onclick = () => openLogSheet(el.dataset.date));
-  staggerChildren(feed);
+  staggerItems(feed, '.log-bubble');
 }
 
 function formatDateLabel(dateStr) {
@@ -413,6 +489,8 @@ function openLogSheet(date) {
       <input type="number" min="0" max="24" step="0.5" value="0" />
     </div>`).join('');
 
+  // FIX: block Save until existing values finish loading, otherwise a quick
+  // tap would overwrite saved per-subject hours with 0.
   $('log-save').disabled = true;
   db.from('study_sessions').select('subject, study_hours').eq('session_date', date).then(({ data }) => {
     let total = 0, hasAny = false;
@@ -433,6 +511,8 @@ function openLogSheet(date) {
   openSheet('log-sheet');
 }
 
+function closeLogSheet() { closeSheet('log-sheet'); }
+
 async function saveLog() {
   const btn = $('log-save');
   setBtnLoading(btn, true, 'Saving…');
@@ -445,7 +525,7 @@ async function saveLog() {
       writes.push(sb_upsertSession(date, subject, val));
     });
     await Promise.all(writes);
-    closeSheet('log-sheet');
+    closeLogSheet();
     toast(`Saved ${logHours}h for ${formatDateLabel(date)} ✅`);
     await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
   } catch (err) {
@@ -470,7 +550,7 @@ async function deleteLog() {
     const { error } = await db.from('study_sessions')
       .delete().eq('user_id', me.telegram_id).eq('session_date', editingDate);
     if (error) { toast('Delete failed 😕'); return; }
-    closeSheet('log-sheet');
+    closeLogSheet();
     toast('Entry deleted');
     await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed()]);
   } catch (err) {
@@ -492,7 +572,6 @@ function buildMarksSubjectTabs() {
     activeMarksSubject = b.dataset.subject;
     $('marks-subject-tabs').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
     renderMarksPanel();
-    haptic('light');
   });
 }
 
@@ -510,12 +589,19 @@ async function renderMarksPanel() {
   const analyzeLabel = $('analyze-subject-label');
   if (analyzeLabel) analyzeLabel.textContent = `— ${subject}`;
 
+  // Fetch ALL weeks for this subject (~53 rows max, or up to 106 for Combined
+  // Maths since Pure and Applied are now separate rows per week) — used for
+  // the history list, the marks chart, AND the Essay/MCQ analyze chart below,
+  // so none of the three can ever disagree with each other.
   const { data, error } = await db.from('model_papers')
     .select('week_number, marks, essay_marks, mcq_marks, is_absent, paper_type').eq('subject', subject)
     .order('week_number', { ascending: false });
   if (error) { toast('Could not load marks 😕'); return; }
   marksHistoryRows = data || [];
 
+  // Chart plots every scored entry (sorted oldest -> newest), not just
+  // weeks inside a trailing "current calendar week" window — any week you
+  // typed by hand outside that window used to be silently dropped.
   const scoredAsc = [...marksHistoryRows]
     .filter(r => !r.is_absent && r.marks !== null)
     .sort((a, b) => a.week_number - b.week_number);
@@ -539,22 +625,27 @@ async function renderMarksPanel() {
         pointBorderColor: c.cardBg, pointBorderWidth: 2 }] },
       options: {
         responsive: true, maintainAspectRatio: false,
-        events: CHART_EVENTS,
         interaction: { intersect: false, mode: 'index' },
         scales: { x: { ticks: { color: c.text }, grid: { display: false } },
                   y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
-        plugins: { legend: { display: false }, tooltip: TOUCH_TOOLTIP_OPTS },
+        plugins: { legend: { display: false } },
         layout: { padding: { right: 18 } },
       },
       plugins: [gradeBandsPlugin],
     });
-    bindTooltipDismiss(marksChart);
   }
 
   renderMarksHistory();
   renderAnalyzeChart(scoredAsc);
 }
 
+/**
+ * Combined Maths gets 3 lines instead of 1: Pure, Applied, and a per-week
+ * Average (mean of whichever of Pure/Applied exist that week — falls back
+ * to whichever single value is present if only one was logged). The native
+ * Chart.js legend is enabled here (and only here) so each line can be
+ * clicked on/off — its default onClick already toggles dataset visibility.
+ */
 function renderCombinedMathsChart(ctx, c, scoredAsc) {
   const pureByWeek = new Map(), appliedByWeek = new Map();
   scoredAsc.forEach(r => {
@@ -581,7 +672,7 @@ function renderCombinedMathsChart(ctx, c, scoredAsc) {
     pointBackgroundColor: color, pointBorderColor: c.cardBg, pointBorderWidth: 2,
   });
 
-  const chart = new Chart(ctx, {
+  return new Chart(ctx, {
     type: 'line',
     data: { labels, datasets: [
       lineDataset('Pure Maths', pureData, '#2AABEE'),
@@ -590,20 +681,18 @@ function renderCombinedMathsChart(ctx, c, scoredAsc) {
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
-      events: CHART_EVENTS,
       interaction: { intersect: false, mode: 'index' },
       scales: { x: { ticks: { color: c.text }, grid: { display: false } },
                 y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
       plugins: { legend: { display: true, position: 'bottom',
-        labels: { color: c.text, usePointStyle: true, boxWidth: 8, padding: 14, font: { size: 11, weight: '600' } } },
-        tooltip: TOUCH_TOOLTIP_OPTS },
+        labels: { color: c.text, usePointStyle: true, boxWidth: 8, padding: 14, font: { size: 11, weight: '600' } } } },
+      layout: { padding: { right: 18 } },
     },
     plugins: [gradeBandsPlugin],
   });
-  bindTooltipDismiss(chart);
-  return chart;
 }
 
+/** Canvas-safe hex for a mark value — same thresholds as gradeBandsPlugin/gradeFor. */
 function gradeHex(marks) {
   if (marks >= 75) return '#3FC65A';
   if (marks >= 65) return '#2AABEE';
@@ -612,6 +701,7 @@ function gradeHex(marks) {
   return '#E5473C';
 }
 
+/** A/L grading bands drawn behind the marks line: A 75+, B 65-74, C 55-64, S 35-54, W <35 */
 const gradeBandsPlugin = {
   id: 'gradeBands',
   beforeDraw(chart) {
@@ -649,6 +739,8 @@ async function saveMarks(subject, week, marks, isAbsent, essay = null, mcq = nul
   return true;
 }
 
+/* ---------------- Paper marks analyze (Essay / MCQ / Total) ---------------- */
+
 function renderAnalyzeChart(scoredAsc) {
   const withBreakdown = scoredAsc.filter(r => r.essay_marks !== null || r.mcq_marks !== null);
   analyzeChart?.destroy();
@@ -666,35 +758,33 @@ function renderAnalyzeChart(scoredAsc) {
   const c = chartColors();
   const ctx = $('analyzeChart').getContext('2d');
   const labels = withBreakdown.map(r => `W${r.week_number}`);
-  const mk = (label, key, color) => {
-    const data = withBreakdown.map(r => r[key] ?? null);
+  const mk = (data, color, alpha) => {
     const grad = ctx.createLinearGradient(0, 0, 0, 200);
-    grad.addColorStop(0, `${color}29`); grad.addColorStop(1, `${color}00`);
-    return { label, data, borderColor: color, backgroundColor: grad, fill: true,
+    grad.addColorStop(0, `${color}${alpha}`); grad.addColorStop(1, `${color}00`);
+    return { data, borderColor: color, backgroundColor: grad, fill: true,
       tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2, pointRadius: 3, pointHoverRadius: 5 };
   };
   analyzeChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets: [
-      mk('Essay', 'essay_marks', '#F5A623'),
-      mk('MCQ', 'mcq_marks', '#3FC65A'),
-      mk('Total', 'marks', '#2AABEE'),
+      { label: 'Essay', ...mk(withBreakdown.map(r => r.essay_marks ?? null), '#F5A623', '29') },
+      { label: 'MCQ',   ...mk(withBreakdown.map(r => r.mcq_marks ?? null),   '#3FC65A', '29') },
+      { label: 'Total', ...mk(withBreakdown.map(r => +r.marks),              '#2AABEE', '1F') },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
-      events: CHART_EVENTS,
       interaction: { intersect: false, mode: 'index' },
       spanGaps: true,
       scales: { x: { ticks: { color: c.text }, grid: { display: false } },
                 y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
-      plugins: { legend: { display: false }, tooltip: TOUCH_TOOLTIP_OPTS },
+      plugins: { legend: { display: false } },
     },
   });
-  bindTooltipDismiss(analyzeChart);
 }
 
 /* ---------------- Marks history list (edit / delete) ---------------- */
 
+/** Same thresholds as gradeBandsPlugin: A ≥75, B 65–74, C 55–64, S 35–54, W <35 */
 function gradeFor(marks) {
   if (marks >= 75) return { letter: 'A', color: 'var(--green)',    soft: 'var(--green-soft)' };
   if (marks >= 65) return { letter: 'B', color: 'var(--accent-a)', soft: 'var(--accent-soft)' };
@@ -706,88 +796,116 @@ function gradeFor(marks) {
 function renderMarksHistory() {
   const wrap = $('marks-history');
   if (!wrap) return;
-  $('marks-history-subject').textContent = `· ${activeMarksSubject}`;
 
-  if (!marksHistoryRows.length) {
-    $('marks-history-summary').textContent = '';
-    wrap.innerHTML = '<div class="log-empty">No marks logged for this subject yet.</div>';
+  // The summary line now lives in the marks-history sheet header (opened via
+  // the history icon next to "+ Add marks") instead of above the dashboard list.
+  const summary = $('marks-history-summary');
+  const rows = marksHistoryRows;
+  const scored = rows.filter(r => !r.is_absent && r.marks !== null);
+
+  if (summary) {
+    if (rows.length) {
+      const avg  = scored.length ? (scored.reduce((a, r) => a + +r.marks, 0) / scored.length).toFixed(1) : '—';
+      const best = scored.length ? Math.max(...scored.map(r => +r.marks)) : '—';
+      summary.textContent = `avg ${avg}% · best ${best}% · ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
+    } else {
+      summary.textContent = 'No entries yet';
+    }
+  }
+
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="log-empty">No marks recorded for this subject yet — tap "Add marks" to log your first paper.</div>';
     return;
   }
-  const scored = marksHistoryRows.filter(r => !r.is_absent && r.marks !== null);
-  const avg = scored.length ? scored.reduce((a, r) => a + (+r.marks || 0), 0) / scored.length : null;
-  const best = scored.length ? Math.max(...scored.map(r => +r.marks || 0)) : null;
-  $('marks-history-summary').textContent =
-    `${marksHistoryRows.length} entr${marksHistoryRows.length > 1 ? 'ies' : 'y'} · avg ${avg != null ? avg.toFixed(1) : '–'} · best ${best ?? '–'}`;
 
-  const pencilSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
-  const trashSvg  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>`;
-
-  wrap.innerHTML = marksHistoryRows.map(r => {
-    const isCM = activeMarksSubject === 'Combined Maths';
-    const badge = isCM && (r.paper_type === 'Pure' || r.paper_type === 'Applied') ? r.paper_type : '';
-    const bits = [];
-    if (r.essay_marks != null) bits.push(`Essay ${r.essay_marks}`);
-    if (r.mcq_marks != null) bits.push(`MCQ ${r.mcq_marks}`);
-    return `<div class="mh-row" data-week="${r.week_number}" data-type="${r.paper_type || ''}">
-      <span class="mh-week">W${r.week_number}</span>
-      <span class="mh-badge">${badge}</span>
-      <span class="mh-marks ${r.is_absent ? 'absent' : ''}">${r.is_absent ? 'Absent' : r.marks}</span>
-      <span class="mh-sub">${bits.join(' · ')}</span>
-      <span class="mh-actions">
-        <button class="icon-btn mh-edit" aria-label="Edit week ${r.week_number}">${pencilSvg}</button>
-        <button class="icon-btn mh-del" aria-label="Delete week ${r.week_number}">${trashSvg}</button>
-      </span>
-    </div>`;
-  }).join('');
-  staggerChildren(wrap);
-
-  const openRowEdit = el => {
-    const r = marksHistoryRows.find(x =>
-      +x.week_number === +el.dataset.week && (x.paper_type || '') === el.dataset.type);
-    if (!r) return;
-    openMarksSheet(+r.week_number, (r.paper_type === 'Pure' || r.paper_type === 'Applied') ? r.paper_type : null);
+  const actions = r => {
+    const type = r.paper_type || 'General';
+    return `
+    <span class="mh-actions">
+      <button class="mh-btn mh-edit" type="button" data-week="${r.week_number}" data-type="${type}" aria-label="Edit week ${r.week_number}" title="Edit">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      </button>
+      <button class="mh-btn mh-del" type="button" data-week="${r.week_number}" data-type="${type}" aria-label="Delete week ${r.week_number}" title="Delete">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      </button>
+    </span>`;
   };
 
-  wrap.querySelectorAll('.mh-row').forEach(el => el.onclick = () => openRowEdit(el));
-
-  wrap.querySelectorAll('.mh-edit').forEach(btn => btn.onclick = e => {
-    e.stopPropagation();
-    openRowEdit(btn.closest('.mh-row'));
-  });
-
-  wrap.querySelectorAll('.mh-del').forEach(btn => btn.onclick = async e => {
-    e.stopPropagation();
-    if (!btn.classList.contains('confirm')) {
-      btn.classList.add('confirm');
-      haptic('light');
-      toast('Tap delete again to confirm');
-      setTimeout(() => btn.classList.remove('confirm'), 2500);
-      return;
+  wrap.innerHTML = rows.map(r => {
+    const type = r.paper_type && r.paper_type !== 'General' ? r.paper_type : '';
+    const typeBadge = type ? `<span class="mh-type mh-type-${type.toLowerCase()}">${type}</span>` : '';
+    if (r.is_absent || r.marks === null) {
+      return `<div class="mh-bubble mh-is-absent" data-week="${r.week_number}" data-type="${r.paper_type || 'General'}">
+        <div class="mh-top">
+          <span class="mh-week">W${r.week_number}</span>
+          ${typeBadge}
+          <span class="mh-marks">Absent</span>
+          ${actions(r)}
+        </div>
+        <div class="mh-track"><div class="mh-fill" style="width:0%"></div></div>
+      </div>`;
     }
-    const row = btn.closest('.mh-row');
-    await deleteMarksEntry(+row.dataset.week, row.dataset.type);
-  });
+    const pct = +r.marks;
+    const color = gradeHex(pct);
+    const g = gradeFor(pct);
+    return `<div class="mh-bubble" data-week="${r.week_number}" data-type="${r.paper_type || 'General'}">
+      <div class="mh-top">
+        <span class="mh-week">W${r.week_number}</span>
+        ${typeBadge}
+        <span class="mh-marks">${pct}<small>/100</small></span>
+        <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
+        ${actions(r)}
+      </div>
+      <div class="mh-track"><div class="mh-fill" style="width:${pct}%; background:${color}"></div></div>
+    </div>`;
+  }).join('');
+  staggerItems(wrap, '.mh-bubble');
 }
 
-async function deleteMarksEntry(week, paperType) {
-  try {
-    let q = db.from('model_papers').delete()
-      .eq('user_id', me.telegram_id)
-      .eq('subject', activeMarksSubject)
-      .eq('week_number', week);
-    q = paperType
-      ? q.eq('paper_type', paperType)
-      : q.or('paper_type.is.null,paper_type.eq.General');
-    const { error } = await q;
-    if (error) throw error;
-    toast(`Week ${week} deleted`);
-    await renderMarksPanel();
-    return true;
-  } catch (err) {
-    console.error(err);
-    toast('Delete failed 😕');
-    return false;
+function handleMarksHistoryClick(e) {
+  const btn = e.target.closest('.mh-btn');
+  if (!btn) return;
+  const week = +btn.dataset.week;
+  const type = btn.dataset.type || 'General';
+  if (btn.classList.contains('mh-del')) {
+    if (btn.dataset.armed === '1') deleteMarksEntry(week, type);  // 2nd tap = confirmed
+    else armDeleteBtn(btn);                                        // 1st tap = arm
+  } else {
+    openMarksSheet(week, type);                                    // edit mode
   }
+}
+
+/** Two-tap confirm: the bin becomes a red "Delete?" pill for 3 seconds. */
+function armDeleteBtn(btn) {
+  document.querySelectorAll('.mh-btn[data-armed="1"]').forEach(disarmDeleteBtn); // one armed at a time
+  btn.dataset.armed = '1';
+  btn.dataset.origHtml = btn.innerHTML;
+  btn.classList.add('mh-armed');
+  btn.textContent = 'Delete?';
+  setTimeout(() => { if (document.body.contains(btn)) disarmDeleteBtn(btn); }, 3000);
+}
+function disarmDeleteBtn(btn) {
+  delete btn.dataset.armed;
+  btn.classList.remove('mh-armed');
+  if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+  delete btn.dataset.origHtml;
+}
+
+async function deleteMarksEntry(week, paperType = 'General') {
+  const bubble = $('marks-history')?.querySelector(`.mh-bubble[data-week="${week}"][data-type="${paperType}"]`);
+  bubble?.classList.add('mh-deleting');
+  const { error } = await db.from('model_papers')
+    .delete()
+    .eq('user_id', me.telegram_id)
+    .eq('subject', activeMarksSubject)
+    .eq('week_number', week)
+    .eq('paper_type', paperType);
+  if (error) {
+    bubble?.classList.remove('mh-deleting');
+    return toast('Delete failed 😕');
+  }
+  toast(`Deleted week ${week} marks 🗑️`);
+  renderMarksPanel(); // redraws chart + history
 }
 
 /* ---------------- Marks entry sheet (Single / Bulk) ---------------- */
@@ -796,6 +914,9 @@ function openMarksSheet(editWeek = null, editPaperType = null) {
   marksEntrySubject = activeMarksSubject;
   if (marksSaveDefaultHtml === null) marksSaveDefaultHtml = $('marks-save').innerHTML;
 
+  // Editing an existing entry? (editWeek/editPaperType come from the history
+  // list — Combined Maths can have two rows sharing a week number, Pure and
+  // Applied, so both fields together identify the exact row being edited.)
   const editing = (editWeek != null && typeof editWeek !== 'object')
     ? marksHistoryRows.find(r => r.week_number === +editWeek && (r.paper_type || 'General') === (editPaperType || 'General'))
     : null;
@@ -811,7 +932,7 @@ function openMarksSheet(editWeek = null, editPaperType = null) {
 
   resetBulkRows();
   switchMarksTab('single');
-  $('marks-tab-bulk').style.display = editing ? 'none' : ''; 
+  $('marks-tab-bulk').style.display = editing ? 'none' : ''; // bulk hidden while editing
 
   const titleEl = $('marks-sheet-title');
   if (titleEl) titleEl.textContent = editing ? 'Edit marks' : 'Add marks';
@@ -819,14 +940,18 @@ function openMarksSheet(editWeek = null, editPaperType = null) {
 
   openSheet('marks-sheet');
 }
+function closeMarksSheet() { closeSheet('marks-sheet'); }
 
+/** Shows the Pure/Applied toggle only for Combined Maths; Physics/Chemistry
+ *  always save as 'General' and never see the toggle. `presetType` pre-selects
+ *  a chip when editing an existing Pure/Applied row; pass null for a fresh entry. */
 function updatePaperTypeField(presetType = null) {
   const field = $('paper-type-field');
   if (!field) return;
   const isMaths = marksEntrySubject === 'Combined Maths';
   field.hidden = !isMaths;
   if (isMaths) {
-    const type = presetType === 'Applied' ? 'Applied' : 'Pure'; 
+    const type = presetType === 'Applied' ? 'Applied' : 'Pure'; // defaults to Pure for a fresh entry
     $('paper-type-toggle').querySelectorAll('.chip').forEach(b => b.classList.toggle('active', b.dataset.type === type));
   }
 }
@@ -835,11 +960,21 @@ function getSelectedPaperType() {
   return $('paper-type-toggle').querySelector('.chip.active')?.dataset.type || 'Pure';
 }
 
+/* ================= List bottom sheets (recent activity / marks history) ================= */
+
+/* Both reuse the .sheet-backdrop / .sheet pattern. They sit BEFORE the entry
+   sheets (#log-sheet / #marks-sheet) in the DOM, so tapping an entry inside
+   a list stacks the edit sheet on top of it; saving or cancelling reveals
+   the freshly re-rendered list underneath — no extra state to track. */
+function openActivitySheet() { openSheet('activity-sheet'); }
+function closeActivitySheet() { closeSheet('activity-sheet'); }
+
 function openMarksHistorySheet() {
   const sub = $('marks-history-subject');
   if (sub) sub.textContent = `— ${activeMarksSubject}`;
   openSheet('marks-history-sheet');
 }
+function closeMarksHistorySheet() { closeSheet('marks-history-sheet'); }
 
 function switchMarksTab(tab) {
   marksActiveTab = tab;
@@ -897,7 +1032,7 @@ async function saveMarksEntry() {
       const results = await Promise.all(rows.map(r => saveMarks(marksEntrySubject, r.week, r.marks, false, null, null, paperType)));
       if (results.some(r => !r)) return;
     }
-    closeSheet('marks-sheet');
+    closeMarksSheet();
     toast('Marks saved ✅');
     if (marksEntrySubject === activeMarksSubject) renderMarksPanel();
   } catch (err) {
@@ -919,114 +1054,19 @@ function buildPaperSubjectTabs() {
     activePaperSubject = b.dataset.subject;
     $('subject-tabs').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
     renderPaperGrid();
-    haptic('light');
   });
 }
 
-const HOLD_MS = 500;      
-const HOLD_SLOP = 10;     
-let holdToggleBusy = false;
-
-function bindPaperCardHold(card) {
-  let holdTimer = 0, startX = 0, startY = 0, holdFired = false;
-
-  const start = (x, y) => {
-    if (card.classList.contains('pc-expanded')) return;
-    holdFired = false;
-    startX = x; startY = y;
-    card.classList.add('holding');                  
-    clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => {
-      holdFired = true;                             
-      card.classList.remove('holding');
-      card.classList.add('fired');
-      setTimeout(() => card.classList.remove('fired'), 340);
-      haptic('medium');                             
-      quickTogglePaperDots(Number(card.dataset.year));
-    }, HOLD_MS);
-  };
-  
-  const cancel = () => {
-    clearTimeout(holdTimer);
-    card.classList.remove('holding');
-  };
-
-  card.addEventListener('touchstart', e => {
-    const t = e.touches[0];
-    start(t.clientX, t.clientY);
-  }, { passive: true });
-  card.addEventListener('touchmove', e => {        
-    const t = e.touches[0];
-    if (Math.hypot(t.clientX - startX, t.clientY - startY) > HOLD_SLOP) cancel();
-  }, { passive: true });
-  card.addEventListener('touchend', cancel);
-  card.addEventListener('touchcancel', cancel);
-
-  card.addEventListener('mousedown', e => start(e.clientX, e.clientY));
-  card.addEventListener('mouseup', cancel);
-  card.addEventListener('mouseleave', cancel);
-
-  card.addEventListener('contextmenu', e => {
-     if (!card.classList.contains('pc-expanded')) e.preventDefault();
-  });
-  card.addEventListener('dragstart', e => e.preventDefault());
-
-  card.addEventListener('click', (e) => {
-    if (holdFired) { holdFired = false; return; }
-    
-    const y = +card.dataset.year;
-    const isOpen = card.classList.contains('pc-expanded');
-
-    if (isOpen) {
-      if (e.target.closest('.pa-history, .pa-add-btn')) return;
-      collapsePaperCard(y);
-      haptic('light');
-    } else {
-      expandPaperCard(card, y);
-      haptic('light');
-    }
-  });
-}
-
-async function quickTogglePaperDots(year) {
-  if (holdToggleBusy) return;                       
-  holdToggleBusy = true;
-  try {
-    const rounds = paperAttemptsByYear.get(year) || [];
-    if (rounds.length >= PAPER_ROUNDS) {
-      const { error } = await db.from('paper_attempts').delete()
-        .eq('user_id', me.telegram_id)
-        .eq('subject', activePaperSubject)
-        .eq('year', year);
-      if (error) throw error;
-      toast(`${year} · rounds reset to 0`);
-    } else {
-      const nextRound = rounds.reduce((m, r) => Math.max(m, +r.round_number || +r.round || 0), 0) + 1;
-      if (nextRound > PAPER_ROUNDS) return;
-      const { error } = await db.from('paper_attempts').upsert({
-        user_id: me.telegram_id,
-        subject: activePaperSubject,
-        year: Number(year),
-        round_number: nextRound,
-        marks: null,
-        time_taken_minutes: null,
-        weak_tags: [],                              
-      }, { onConflict: 'user_id,subject,year,round_number' });
-      if (error) throw error;
-    }
-    await renderPaperGrid(false);
-    loadWeakTagsData().catch(console.error);
-  } catch (err) {
-    console.error(err);
-    toast('Could not update rounds 😕');
-  } finally {
-    holdToggleBusy = false;
-  }
-}
-
-async function renderPaperGrid(animate = true) {
+async function renderPaperGrid() {
+  // Small headroom above the real current year so new A/L years show up
+  // automatically without needing another code change each January.
   const currentYear = Math.min(new Date().getFullYear(), 2030);
   const totalYears = currentYear - 2000 + 1;
+
+  // Grid is about to be rebuilt from scratch — any expanded card and its
+  // chart instance are about to be detached, so drop the refs up front.
+  miniChart?.destroy(); miniChart = null;
+  expandedPaperYear = null;
 
   const [{ data: papers }, { data: attempts }] = await Promise.all([
     db.from('past_papers').select('year, attempt_number').eq('subject', activePaperSubject),
@@ -1037,6 +1077,8 @@ async function renderPaperGrid(animate = true) {
   const byYear = new Map((papers || []).map(p => [p.year, p.attempt_number || 0]));
   const doneCount = [...byYear.values()].filter(n => n > 0).length;
 
+  // One fetch covers every year for this subject, so opening a card doesn't
+  // need its own network round-trip — it just reads from this cache.
   paperAttemptsByYear = new Map();
   for (const a of (attempts || [])) {
     if (!paperAttemptsByYear.has(a.year)) paperAttemptsByYear.set(a.year, []);
@@ -1049,18 +1091,10 @@ async function renderPaperGrid(animate = true) {
 
   let html = '';
   for (let y = currentYear; y >= 2000; y--) {
-    const roundsList = paperAttemptsByYear.get(y) || [];
-    const rounds = Math.max(byYear.get(y) || 0, roundsList.length);
+    const rounds = byYear.get(y) || 0;
     html += paperCardHtml(y, rounds);
   }
-  
   $('paper-grid').innerHTML = html;
-  $('paper-grid').querySelectorAll('.paper-card').forEach(bindPaperCardHold);
-  
-  if(expandedPaperYear) {
-    const reopenCard = $('paper-grid').querySelector(`.paper-card[data-year="${expandedPaperYear}"]`);
-    if (reopenCard) expandPaperCard(reopenCard, expandedPaperYear);
-  }
 }
 
 function paperCardHtml(year, rounds) {
@@ -1076,45 +1110,65 @@ function paperCardHtml(year, rounds) {
   </div>`;
 }
 
+async function setPaperRounds(year, rounds) {
+  const card = $('paper-grid').querySelector(`.paper-card[data-year="${year}"]`);
+  if (card) {
+    card.classList.toggle('pc-complete', rounds >= 5);
+    card.querySelectorAll('.pc-dot').forEach((dot, i) => dot.classList.toggle('filled', i < rounds));
+  }
+
+  const status = rounds === 0 ? 'not done' : rounds === 1 ? '1st time' : '2nd time+';
+  const { error } = await db.from('past_papers').upsert({
+    user_id: me.telegram_id, subject: activePaperSubject, year,
+    attempt_number: rounds, status,
+  }, { onConflict: 'user_id,subject,year' });
+  if (error) { toast('Update failed 😕'); renderPaperGrid(); return; }
+
+  // renderPaperGrid() rebuilds every card (needed to refresh the progress
+  // bar), which would otherwise silently close an expanded card — reopen it
+  // afterwards so toggling a dot doesn't kick the user out of the tracker.
+  const reopenYear = expandedPaperYear;
+  await renderPaperGrid();
+  if (reopenYear != null) {
+    const reopenCard = $('paper-grid').querySelector(`.paper-card[data-year="${reopenYear}"]`);
+    if (reopenCard) expandPaperCard(reopenCard, reopenYear);
+  }
+}
+
+function handlePaperDotClick(dot) {
+  const year = +dot.dataset.year;
+  const index = +dot.dataset.index; // 0-based
+  const currentlyFilled = dot.closest('.paper-card').querySelectorAll('.pc-dot.filled').length;
+  const next = currentlyFilled === index + 1 ? index : index + 1; // click last filled dot again -> undo one
+  setPaperRounds(year, next);
+}
+
+/* ================= Paper attempt tracker (marks / time / weak tags) ================= */
+
+/** Opens/closes a year's card. Only one card is expanded at a time — keeps at most one Chart.js instance alive. */
 function togglePaperCard(cardEl, year) {
   const isOpen = cardEl.classList.contains('pc-expanded');
-  if (expandedPaperYear !== null && expandedPaperYear !== year) {
-      collapsePaperCard(expandedPaperYear);
-  }
-  if (isOpen) {
-      collapsePaperCard(year);
-  } else {
-      expandPaperCard(cardEl, year);
-  }
+  if (expandedPaperYear !== null && expandedPaperYear !== year) collapsePaperCard(expandedPaperYear);
+  isOpen ? collapsePaperCard(year) : expandPaperCard(cardEl, year);
 }
 
 function expandPaperCard(cardEl, year) {
   expandedPaperYear = year;
+  cardEl.classList.add('pc-expanded');
   const attempts = paperAttemptsByYear.get(year) || [];
   const region = $(`pc-expand-${year}`);
-  
-  if (region) {
-    if (miniChart) { miniChart.destroy(); miniChart = null; }
-    region.innerHTML = expandedCardHtml(year, attempts);
-    wireExpandedCardEvents(year);
-    renderMiniChart(year, attempts);
-    void region.offsetWidth; 
-    cardEl.classList.add('pc-expanded');
-  }
+  region.innerHTML = expandedCardHtml(year, attempts);
+  wireExpandedCardEvents(year);
+  renderMiniChart(year, attempts);
 }
 
 function collapsePaperCard(year) {
   const cardEl = $('paper-grid')?.querySelector(`.paper-card[data-year="${year}"]`);
-  if (cardEl) cardEl.classList.remove('pc-expanded');
-  
-  if (expandedPaperYear === year) {
-      expandedPaperYear = null;
-  }
-  setTimeout(() => {
-     if (expandedPaperYear === year) return; 
-     const region = $(`pc-expand-${year}`);
-     if (region) region.innerHTML = '';
-  }, 320); 
+  cardEl?.classList.remove('pc-expanded');
+  miniChart?.destroy(); miniChart = null;
+  const region = $(`pc-expand-${year}`);
+  if (region) region.innerHTML = '';
+  if (expandedPaperYear === year) expandedPaperYear = null;
 }
 
 function expandedCardHtml(year, attempts) {
@@ -1122,10 +1176,15 @@ function expandedCardHtml(year, attempts) {
     ? attempts.map(a => paperAttemptBubbleHtml(year, a)).join('')
     : '<div class="log-empty">No rounds logged yet — tap "Add attempt" to log your first round.</div>';
 
+  // The entry form now lives in the #attempt-sheet bottom sheet (opened by
+  // the button below or a history row's edit icon); the expanded card keeps
+  // only the analytics chart + attempt history + completion dots above.
   return `<div class="pa-wrap">
     <div class="chart-box chart-box-sm"><canvas id="pa-chart-${year}"></canvas></div>
+
     <div class="section-label">Attempt history</div>
     <div class="pa-history">${historyHtml}</div>
+
     <button class="primary-btn pa-add-btn" type="button" id="pa-add-attempt-${year}">+ Add attempt</button>
   </div>`;
 }
@@ -1135,23 +1194,27 @@ function paperAttemptBubbleHtml(year, a) {
   const color = gradeHex(pct);
   const g = gradeFor(pct);
   const tagsHtml = (a.weak_tags || []).map(t => `<span class="pa-tag-pill">${escapeHtml(t)}</span>`).join('');
-
-  const pencilSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
-  const trashSvg  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>`;
-
-  return `<div class="mh-row" data-round="${a.round_number}">
+  return `<div class="mh-bubble" data-round="${a.round_number}">
+    <div class="mh-top">
       <span class="mh-week">R${a.round_number}</span>
       <span class="mh-marks">${pct}<small>/100</small></span>
       <span class="mh-grade" style="color:${g.color}; background:${g.soft}">${g.letter}</span>
-      <span class="mh-sub">${a.time_taken_minutes != null ? `⏱ ${a.time_taken_minutes}m` : ''}</span>
+      ${a.time_taken_minutes != null ? `<span class="pa-time">⏱ ${a.time_taken_minutes}m</span>` : ''}
       <span class="mh-actions">
-        <button class="icon-btn pa-edit" aria-label="Edit round ${a.round_number}">${pencilSvg}</button>
-        <button class="icon-btn mh-del pa-del" aria-label="Delete round ${a.round_number}">${trashSvg}</button>
+        <button class="mh-btn pa-edit" type="button" aria-label="Edit round ${a.round_number}" title="Edit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <button class="mh-btn mh-del pa-del" type="button" aria-label="Delete round ${a.round_number}" title="Delete">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        </button>
       </span>
-      ${tagsHtml ? `<div class="pa-tags-wrapper"><div class="pa-tags-row">${tagsHtml}</div></div>` : ''}
+    </div>
+    <div class="mh-track"><div class="mh-fill" style="width:${pct}%; background:${color}"></div></div>
+    ${tagsHtml ? `<div class="pa-tags-row">${tagsHtml}</div>` : ''}
   </div>`;
 }
 
+/** Mini line chart of marks across logged rounds — same visual language as the model-paper marks chart. */
 function renderMiniChart(year, attempts) {
   miniChart?.destroy(); miniChart = null;
   const canvas = $(`pa-chart-${year}`);
@@ -1162,83 +1225,53 @@ function renderMiniChart(year, attempts) {
   box.style.display = 'block';
 
   const c = chartColors();
-  miniChart = new Chart(canvas.getContext('2d'), {
+  const ctx = canvas.getContext('2d');
+  miniChart = new Chart(ctx, {
     type: 'line',
-    data: { labels: scored.map(a => 'R' + a.round_number), datasets: [{
+    data: { labels: scored.map(a => `R${a.round_number}`), datasets: [{
       data: scored.map(a => +a.marks),
-      borderColor: '#2AABEE', borderWidth: 2.5, tension: .35, fill: false,
-      pointBackgroundColor: scored.map(a => gradeHex(+a.marks)),
-      pointBorderColor: c.cardBg, pointBorderWidth: 2, pointRadius: 4,
-    }]},
+      borderColor: SUBJECT_COLORS[activePaperSubject] || '#2AABEE', backgroundColor: 'transparent',
+      tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2.5,
+      pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: scored.map(a => gradeHex(+a.marks)),
+      pointBorderColor: c.cardBg, pointBorderWidth: 2,
+    }] },
     options: {
       responsive: true, maintainAspectRatio: false,
-      events: CHART_EVENTS,
       interaction: { intersect: false, mode: 'index' },
       scales: { x: { ticks: { color: c.text }, grid: { display: false } },
                 y: { min: 0, max: 100, ticks: { color: c.text }, grid: { color: c.grid, borderDash: [4, 4] } } },
-      plugins: { legend: { display: false }, tooltip: TOUCH_TOOLTIP_OPTS },
+      plugins: { legend: { display: false } },
     },
   });
-  bindTooltipDismiss(miniChart);
 }
 
+/** Wires the "Add attempt" button and history edit/delete for one expanded card. */
 function wireExpandedCardEvents(year) {
   const region = $(`pc-expand-${year}`);
   if (!region) return;
 
-  const historyWrap = region.querySelector('.pa-history');
-  staggerChildren(historyWrap);
-
   region.querySelector(`#pa-add-attempt-${year}`).onclick = () => openAttemptSheet(year);
 
-  historyWrap.addEventListener('click', async e => {
+  region.querySelector('.pa-history').addEventListener('click', e => {
     const editBtn = e.target.closest('.pa-edit');
     const delBtn = e.target.closest('.pa-del');
-    
     if (editBtn) {
-      e.stopPropagation();
-      const round = +editBtn.closest('.mh-row').dataset.round;
-      openAttemptSheet(year, round);           
+      const round = +editBtn.closest('.mh-bubble').dataset.round;
+      openAttemptSheet(year, round);           // edit mode in the sheet
     } else if (delBtn) {
-      e.stopPropagation();
-      if (!delBtn.classList.contains('confirm')) {
-        delBtn.classList.add('confirm');
-        haptic('light');
-        toast('Tap delete again to confirm');
-        setTimeout(() => delBtn.classList.remove('confirm'), 2500);
-        return;
-      }
-      const round = +delBtn.closest('.mh-row').dataset.round;
-      await deletePaperAttempt(year, round);
+      if (delBtn.dataset.armed === '1') deletePaperAttempt(year, +delBtn.closest('.mh-bubble').dataset.round);
+      else armDeleteBtn(delBtn); // two-tap confirm, same helper the marks history uses
     }
   });
 }
 
-function normalizeAttemptTags(tags) {
-  if (!Array.isArray(tags)) return [];   
-  return tags
-    .filter(t => typeof t === 'string' && t.trim().length > 0)
-    .map(t => t.trim());
-}
-
-async function saveAttemptEntry({ year, round, marks, time }) {
-  const weakUnits = normalizeAttemptTags(selectedWeakTags);
-
-  const { error } = await db.from('paper_attempts').upsert({
-    user_id: me.telegram_id,
-    subject: activePaperSubject,
-    year,                    
-    round_number: round,     
-    marks: (marks == null || isNaN(marks)) ? null : marks,
-    time_taken_minutes: (time == null || isNaN(time)) ? null : time,
-    weak_tags: weakUnits,   
-  }, { onConflict: 'user_id,subject,year,round_number' });
-
-  if (error) {
-    console.error('saveAttemptEntry:', error);   
-    toast('Save failed 😕');
-    return false;
-  }
+async function saveAttempt(year, roundNumber, marks, timeTaken, tags) {
+  const body = {
+    user_id: me.telegram_id, subject: activePaperSubject, year, round_number: roundNumber,
+    marks, time_taken_minutes: timeTaken, weak_tags: tags,
+  };
+  const { error } = await db.from('paper_attempts').upsert(body, { onConflict: 'user_id,subject,year,round_number' });
+  if (error) { toast('Save failed 😕'); return false; }
   return true;
 }
 
@@ -1251,6 +1284,7 @@ async function fetchAttemptsForYear(year) {
   return data || [];
 }
 
+/** Re-fetches one year's attempts and redraws its history + chart in place. */
 async function refreshPaperCardAttempts(year) {
   const attempts = await fetchAttemptsForYear(year);
   paperAttemptsByYear.set(year, attempts);
@@ -1270,12 +1304,20 @@ async function deletePaperAttempt(year, round) {
   await loadWeakTagsData();
 }
 
+/* ---------------- Paper attempt sheet (Add attempt / edit round) ---------------- */
+
+/** Next un-logged round number — or the 5th round to re-edit when all are done. */
 function nextAttemptRound(attempts) {
   return attempts.length < 5 ? attempts.length + 1 : 5;
 }
 
+/**
+ * Opens the attempt sheet for one paper year.
+ *  - no roundNumber: "log" mode, targeting the next un-logged round
+ *  - roundNumber:    "edit" mode, fields prefilled from that attempt
+ */
 function openAttemptSheet(year, roundNumber = null) {
-  attemptEntryYear = Number(year);      
+  attemptEntryYear = year;
   if (attemptSaveDefaultHtml === null) attemptSaveDefaultHtml = $('attempt-save').innerHTML;
 
   const attempts = paperAttemptsByYear.get(year) || [];
@@ -1299,27 +1341,23 @@ function openAttemptSheet(year, roundNumber = null) {
 
 function closeAttemptSheet() { closeSheet('attempt-sheet'); }
 
-async function saveAttempt() {
-  const btn = $('attempt-save');
+async function saveAttemptEntry() {
   const marks = parseFloat($('attempt-marks').value);
-  const time = parseInt($('attempt-time').value);
+  const timeRaw = $('attempt-time').value.trim();
+  const timeTaken = timeRaw === '' ? null : parseInt(timeRaw, 10);
 
-  const year = Number(attemptEntryYear);
-  const round = Number(attemptEntryRound);
-  if (!Number.isInteger(year) || year <= 0 || !Number.isInteger(round) || round <= 0) {
-    toast('Missing year/round — close and reopen this sheet');
-    return;
-  }
+  if (isNaN(marks) || marks < 0 || marks > 100) { toast('Enter marks between 0 and 100'); return; }
+  if (timeRaw !== '' && (isNaN(timeTaken) || timeTaken < 0)) { toast('Enter a valid time in minutes'); return; }
 
-  if (isNaN(marks) && isNaN(time)) { toast('Enter marks or time'); return; }
-
+  const btn = $('attempt-save');
   setBtnLoading(btn, true, 'Saving…');
   try {
-    const ok = await saveAttemptEntry({ year, round, marks, time });
+    const ok = await saveAttempt(attemptEntryYear, attemptEntryRound, marks, timeTaken, [...selectedWeakTags]);
     if (!ok) return;
+    toast(`Round ${attemptEntryRound} saved ✅`);
     closeAttemptSheet();
-    toast('Round saved ✅');
-    await Promise.all([renderPaperGrid(), loadWeakTagsData()]);
+    await refreshPaperCardAttempts(attemptEntryYear);
+    await loadWeakTagsData(); // tags may have changed → refresh autocomplete pool + dashboard analytics
   } catch (err) {
     console.error(err);
     toast('Save failed 😕');
@@ -1327,6 +1365,8 @@ async function saveAttempt() {
     setBtnLoading(btn, false);
   }
 }
+
+/* ---------------- Weak-unit tag input (attempt sheet): autocomplete + chips ---------------- */
 
 function wireAttemptTagInput() {
   const input = $('attempt-tag-input');
@@ -1347,6 +1387,7 @@ function wireAttemptTagInput() {
 
   input.addEventListener('input', showMatches);
   input.addEventListener('focus', () => { if (weakTagPool.length) showMatches(); });
+  // Delay hiding on blur so a click on a dropdown option registers before it disappears.
   input.addEventListener('blur', () => setTimeout(() => { dropdown.hidden = true; }, 150));
 
   input.addEventListener('keydown', e => {
@@ -1388,6 +1429,9 @@ function renderAttemptTagChips() {
   });
 }
 
+/* ---------------- Weak areas analysis (dashboard panel) ---------------- */
+
+/** One query covers both the autocomplete pool (all unique tags) and the ranked frequency list. */
 async function loadWeakTagsData() {
   const { data, error } = await db.from('paper_attempts').select('weak_tags').not('weak_tags', 'is', null);
   if (error) { console.error(error); return; }
@@ -1422,8 +1466,9 @@ function renderWeakAreaAnalysis(counts) {
       <span class="wa-count">${count}×</span>
     </div>`;
   }).join('');
-  staggerChildren(wrap);
 }
+
+/* ================= Leaderboard ================= */
 
 async function loadLeaderboard() {
   const rpcName = { yesterday: 'leaderboard_yesterday', week: 'leaderboard_week', month: 'leaderboard_month' }[activeLbPeriod];
@@ -1443,8 +1488,10 @@ async function loadLeaderboard() {
       <span class="lb-name">${escapeHtml(r.name)}</span>
       <span class="lb-hours">${(+r.total_hours).toFixed(1)} h</span>
     </li>`).join('');
-  staggerChildren(list);
+  staggerItems(list, 'li');
 }
+
+/* ================= Settings panel ================= */
 
 function renderSettingsPanel() {
   $('set-stream-toggle').querySelectorAll('.chip').forEach(b =>
@@ -1470,7 +1517,6 @@ function renderSettingsPanel() {
       settings[key] = newVal;
       group.querySelectorAll('.day-chip').forEach(c => c.classList.toggle('active', c.dataset.day === newVal));
       await saveSettingsField(key, newVal);
-      haptic('light');
     });
   });
 }
@@ -1491,41 +1537,45 @@ async function setStream(stream) {
   await Promise.all([renderPaperGrid(), renderMarksPanel(), loadDonut()]);
 }
 
+/* ================= UI wiring ================= */
+
 function bindUI() {
   $('btn-logout').onclick = logout;
-  $('ai-mentor-close')?.addEventListener('click', hideAIMentorCard);
-  $('btn-settings').onclick = () => openSheet('settings-backdrop');
+  $('btn-settings').onclick = () => { renderSettingsPanel(); openSheet('settings-backdrop'); };
   $('settings-close').onclick = () => closeSheet('settings-backdrop');
   $('settings-backdrop').addEventListener('click', e => { if (e.target === $('settings-backdrop')) closeSheet('settings-backdrop'); });
-  $('set-stream-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => { setStream(b.dataset.stream); haptic('light'); });
+  $('set-stream-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => setStream(b.dataset.stream));
 
   document.querySelectorAll('.seg').forEach(t => t.onclick = () => {
+    if (t.classList.contains('active')) return;
     document.querySelectorAll('.seg').forEach(x => x.classList.toggle('active', x === t));
-    $('tab-dashboard').hidden = t.dataset.tab !== 'dashboard';
-    $('tab-papers').hidden = t.dataset.tab !== 'papers';
-    $('tab-leaderboard').hidden = t.dataset.tab !== 'leaderboard';
-    haptic('light');
+    switchTab(t.dataset.tab);
+  });
+
+  $('paper-grid').addEventListener('click', e => {
+    const dot = e.target.closest('.pc-dot');
+    if (dot) { handlePaperDotClick(dot); return; }
+    if (e.target.closest('.pc-expand')) return; // clicks inside the expanded form shouldn't collapse the card
+    const card = e.target.closest('.paper-card');
+    if (card) togglePaperCard(card, +card.dataset.year);
   });
 
   $('range-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeRange = b.dataset.range === 'all' ? 'all' : +b.dataset.range;
     $('range-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     updateGrowthChart();
-    haptic('light');
   });
 
   $('chart-type-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeChartType = b.dataset.type;
     $('chart-type-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     updateGrowthChart();
-    haptic('light');
   });
 
   $('lb-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     activeLbPeriod = b.dataset.period;
     $('lb-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
     loadLeaderboard();
-    haptic('light');
   });
 
   $('fab-log').onclick = () => openLogSheet(sltDate());
@@ -1534,21 +1584,27 @@ function bindUI() {
   $('log-sheet').addEventListener('click', e => { if (e.target === $('log-sheet')) closeLogSheet(); });
   $('log-save').onclick = saveLog;
   $('log-delete').onclick = deleteLog;
-  $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; haptic('light'); };
-  $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; haptic('light'); };
+  $('log-minus').onclick = () => { logHours = Math.max(0, +(logHours - 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
+  $('log-plus').onclick  = () => { logHours = Math.min(24, +(logHours + 0.5).toFixed(1)); $('log-hours-display').textContent = logHours; };
 
+  // Arrow wrapper: prevents the click Event object from being misread as `editWeek`
   $('btn-add-marks').onclick = () => openMarksSheet();
   $('marks-cancel').onclick = closeMarksSheet;
   $('marks-sheet').addEventListener('click', e => { if (e.target === $('marks-sheet')) closeMarksSheet(); });
   $('marks-save').onclick = saveMarksEntry;
-  $('marks-tab-single').onclick = () => { switchMarksTab('single'); haptic('light'); };
-  $('marks-tab-bulk').onclick = () => { switchMarksTab('bulk'); haptic('light'); };
-  $('bulk-add-row').onclick = () => { addBulkRow(); haptic('light'); };
+  $('marks-tab-single').onclick = () => switchMarksTab('single');
+  $('marks-tab-bulk').onclick = () => switchMarksTab('bulk');
+  $('bulk-add-row').onclick = addBulkRow;
   $('paper-type-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
     $('paper-type-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
-    haptic('light');
   });
 
+  // NEW: marks history edit/delete via event delegation — works the same now
+  // that #marks-history lives inside its bottom sheet (same node, just moved).
+  $('marks-history')?.addEventListener('click', handleMarksHistoryClick);
+
+  // List bottom sheets — "View activity" pill (donut panel) + history icon
+  // (marks panel header). Backdrop taps close, same as the entry sheets.
   $('btn-view-activity').onclick = openActivitySheet;
   $('activity-close').onclick = closeActivitySheet;
   $('activity-sheet').addEventListener('click', e => { if (e.target === $('activity-sheet')) closeActivitySheet(); });
@@ -1557,23 +1613,31 @@ function bindUI() {
   $('marks-history-close').onclick = closeMarksHistorySheet;
   $('marks-history-sheet').addEventListener('click', e => { if (e.target === $('marks-history-sheet')) closeMarksHistorySheet(); });
 
+  // Paper-attempt sheet (Papers tab → "+ Add attempt" / history edit icon)
   $('attempt-cancel').onclick = closeAttemptSheet;
   $('attempt-close').onclick = closeAttemptSheet;
   $('attempt-sheet').addEventListener('click', e => { if (e.target === $('attempt-sheet')) closeAttemptSheet(); });
-  $('attempt-save').onclick = saveAttempt;
+  $('attempt-save').onclick = saveAttemptEntry;
   wireAttemptTagInput();
 
+  // Real-time totals — per-subject rows → "hours total" stepper display.
+  // Delegated on the container because the rows are rebuilt on every openLogSheet().
+  // (The stepper +/- still works for manual totals with no subject split —
+  // typing in any subject row simply re-syncs the total to the row sum.)
   $('log-subject-rows').addEventListener('input', e => {
     if (!e.target.closest('.subject-row')) return;
     let sum = 0;
     $('log-subject-rows').querySelectorAll('.subject-row input').forEach(inp => {
       const v = parseFloat(inp.value);
-      if (!isNaN(v)) sum += v;                 
+      if (!isNaN(v)) sum += v;                 // empty / invalid rows count as 0
     });
     logHours = +sum.toFixed(1);
     $('log-hours-display').textContent = logHours;
   });
 
+  // Real-time totals — Essay + MCQ → "Total marks" field.
+  // Empty/NaN fields count as 0; when BOTH are empty the total is left as-is
+  // so logging a total without a breakdown stays possible.
   const recomputeTotalMarks = () => {
     const essayRaw = $('single-essay').value.trim();
     const mcqRaw = $('single-mcq').value.trim();
@@ -1585,12 +1649,14 @@ function bindUI() {
   $('single-mcq').addEventListener('input', recomputeTotalMarks);
 }
 
+/* ================= utils ================= */
 let toastTimer;
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2400);
 }
 
+/** Toggles a spinner + label on a button and blocks double-submits. */
 function setBtnLoading(btn, loading, label = 'Saving…') {
   if (!btn) return;
   if (loading) {
@@ -1602,66 +1668,4 @@ function setBtnLoading(btn, loading, label = 'Saving…') {
     if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
     delete btn.dataset.origHtml;
   }
-}
-
-let mentorTypeTimer = null;
-
-async function checkAndShowAIMentor() {
-  try {
-    if (!me || !CONFIG.WORKER_URL) return;
-
-    const today = sltDate();
-    const storageKey = `alt_lastAIPopupDate_${me.telegram_id}`;
-    if (localStorage.getItem(storageKey) === today) return; 
-
-    const token = localStorage.getItem('alt_token');
-    if (!token) return;
-
-    const res = await fetch(`${CONFIG.WORKER_URL}/api/mentor`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`mentor request failed: ${res.status}`);
-
-    const { message } = await res.json();
-    if (!message) return;
-
-    localStorage.setItem(storageKey, today); 
-    showAIMentorCard(message);
-  } catch (err) {
-    console.warn('AI mentor unavailable:', err); 
-  }
-}
-
-function showAIMentorCard(message) {
-  const card = $('ai-mentor-card');
-  const textEl = $('ai-mentor-text');
-  if (!card || !textEl) return;
-
-  card.hidden = false;
-  card.classList.add('typing');
-  requestAnimationFrame(() => card.classList.add('show'));
-
-  typewriterEffect(textEl, message, 22, () => card.classList.remove('typing'));
-}
-
-function hideAIMentorCard() {
-  const card = $('ai-mentor-card');
-  if (!card) return;
-  clearInterval(mentorTypeTimer);
-  card.classList.remove('show');
-  setTimeout(() => { card.hidden = true; }, 400); 
-}
-
-function typewriterEffect(el, text, speed = 22, onDone) {
-  clearInterval(mentorTypeTimer);
-  el.textContent = '';
-  let i = 0;
-  mentorTypeTimer = setInterval(() => {
-    el.textContent += text.charAt(i);
-    i++;
-    if (i >= text.length) {
-      clearInterval(mentorTypeTimer);
-      onDone?.();
-    }
-  }, speed);
 }
