@@ -156,10 +156,14 @@ svg { display: block; }
   padding: 4px; border-radius: 14px; margin-bottom: 20px; box-shadow: var(--shadow);
 }
 .seg {
-  flex: 1; border: none; background: none; padding: 10px 12px; border-radius: 10px;
+  flex: 1; border: none; background: none; padding: 11px 12px; border-radius: 10px;
   color: var(--muted); font-weight: 600; font-size: .88rem;
-  min-height: 44px; display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; position: relative;
 }
+/* Keep the pill visually compact (native segmented-control proportions)
+   while still guaranteeing a 44px-tall tap zone — the box just extends
+   invisibly above/below the painted pill rather than inflating it. */
+.seg::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
 .seg.active { background: var(--accent-grad); color: #fff; }
 
 /* ---------- Tab panel transition (Dashboard / Papers / Leaderboard) ----------
@@ -185,6 +189,8 @@ svg { display: block; }
 .stat-label { color: var(--muted); font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
 .stat-value { font-size: 1.7rem; font-weight: 700; }
 .stat-value .unit { font-size: .95rem; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.stat-value .stat-flame { display: inline-block; vertical-align: -4px; margin-left: 5px; color: var(--amber); }
+.stat-card.grad-a .stat-flame { color: #fff; }
 
 /* ---------- Panels ---------- */
 .panel {
@@ -193,7 +199,7 @@ svg { display: block; }
 }
 .panel h2 { font-size: 1rem; margin-bottom: 14px; }
 .panel h2 small.muted-sm { font-weight: 500; margin-left: 4px; }
-.panel-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 10px; flex-wrap: wrap; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 10px 14px; flex-wrap: wrap; }
 .panel-head h2 { margin-bottom: 0; }
 .growth-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 .marks-head-actions { display: flex; align-items: center; gap: 8px; }
@@ -204,22 +210,22 @@ svg { display: block; }
 
 /* chip toggle (range switch, subject tabs, leaderboard periods) */
 .chip-toggle { display: flex; gap: 6px; background: var(--bg); border-radius: 999px; padding: 4px; }
-.chip-toggle.wrap { flex-wrap: wrap; background: none; padding: 0; margin-bottom: 14px; }
+.chip-toggle.wrap { flex-wrap: wrap; gap: 8px; background: none; padding: 0; margin-bottom: 14px; }
 .chip {
   border: 1px solid var(--border); background: var(--bg-elevated); color: var(--muted);
-  border-radius: 999px; padding: 7px 15px; font-weight: 600; font-size: .82rem;
-  min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; padding: 8px 16px; font-weight: 600; font-size: .82rem;
+  display: inline-flex; align-items: center; justify-content: center; position: relative;
+}
+/* Same "compact pill, roomy invisible tap zone" trick as .seg above — a
+   segmented row of four 44px-tall pills reads as chunky and amateurish;
+   real 44px hit boxes with a native-proportioned pill on top reads as
+   Apple/Google-style refinement instead. */
+.chip::before {
+  content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: max(44px, 100%); height: max(44px, 100%);
 }
 .chip-toggle:not(.wrap) .chip:not(.active) { border: none; background: none; }
 .chip.active { background: var(--accent-grad); color: #fff; border-color: transparent; }
-/* Dense chip clouds (subject filters) would get unusably tall at a literal
-   44px each once they wrap to several rows — keep the visible chip compact
-   and pad the *hit area* to 44px instead, via an invisible overlay. */
-.chip-toggle.wrap .chip { position: relative; min-height: 0; }
-.chip-toggle.wrap .chip::before {
-  content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 44px; height: max(44px, 100%);
-}
 
 /* ---------- Chart containers ----------
    Chart.js with maintainAspectRatio:false sizes the canvas to its parent.
