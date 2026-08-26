@@ -201,7 +201,24 @@ svg { display: block; }
 .panel h2 small.muted-sm { font-weight: 500; margin-left: 4px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 10px 14px; flex-wrap: wrap; }
 .panel-head h2 { margin-bottom: 0; }
-.growth-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Both toggles (range + chart-type) sit in one un-wrapped row; if a very
+   narrow screen still can't fit everything, it scrolls horizontally rather
+   than wrapping to a second row or shrinking text past legibility. */
+.growth-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
+  overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.growth-controls::-webkit-scrollbar { display: none; height: 0; }
+.growth-controls .chip-toggle { flex-shrink: 0; }
+
+/* On narrow phones, size the chips down further so both toggle groups
+   comfortably share one row without needing to scroll at all. */
+@media (max-width: 480px) {
+  .growth-controls { gap: 8px; }
+  .growth-controls .chip-toggle { gap: 3px; padding: 3px; }
+  .growth-controls .chip { padding: 6px 11px; font-size: .74rem; }
+}
 .marks-head-actions { display: flex; align-items: center; gap: 8px; }
 .muted-sm { color: var(--muted); font-size: .78rem; }
 .section-label { color: var(--muted); font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 8px; }
