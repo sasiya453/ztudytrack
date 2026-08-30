@@ -81,7 +81,7 @@ function closeSheet(id) {
 }
 
 /* ---------------- Tab panels (Dashboard / Papers / Leaderboard) ---------------- */
-const TAB_PANELS = { dashboard: 'tab-dashboard', papers: 'tab-papers', leaderboard: 'tab-leaderboard' };
+const TAB_PANELS = { dashboard: 'tab-dashboard', papers: 'tab-papers', leaderboard: 'tab-leaderboard', revise: 'tab-revise' }; // NEW: 'revise' added (4th tab) — original three entries unchanged
 function switchTab(tab) {
   Object.entries(TAB_PANELS).forEach(([name, id]) => {
     const panel = $(id);
@@ -269,8 +269,9 @@ async function loadApp() {
   buildMarksSubjectTabs();
   renderSettingsPanel();
   bindUI();
+  initReviseTab(); // NEW (Revise tab): wires the 4th tab's UI, sheet, filters — additive, nothing below changed
 
-  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid(), loadWeakTagsData()]);
+  await Promise.all([loadStats(), loadDonut(), loadHeatmap(), loadLogFeed(), renderMarksPanel(), loadLeaderboard(), renderPaperGrid(), loadWeakTagsData(), loadRevisionTopics()]); // NEW: loadRevisionTopics appended to the boot loaders
 }
 
 function logout() { localStorage.removeItem('alt_token'); location.reload(); }
@@ -1668,4 +1669,698 @@ function setBtnLoading(btn, loading, label = 'Saving…') {
     if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
     delete btn.dataset.origHtml;
   }
+}
+/* ================================================================================
+   REVISE TAB — Retrace feature port (spaced repetition), backed by Supabase
+   ================================================================================
+   Entirely ADDITIVE: no existing function, constant, table, cron, or auth flow
+   was modified. Wiring into the existing app happens in exactly two additive
+   lines inside loadApp():
+       initReviseTab();        // wires the 4th tab's UI
+       loadRevisionTopics()    // appended to the boot Promise.all
+   All persistence goes through the existing Supabase client (`db`, already
+   initialized by initSupabase), scoped to me.telegram_id, against the new
+   `revision_topics` table (see revision_topics_migration.sql).
+
+   Data model — faithful port of Retrace's per-topic shape:
+     { id, name, subject, difficulty ('easy'|'medium'|'hard'),
+       intervals: [n, ...], stage, initialDate, dueDate, lastRevised,
+       history: [{date, at, stage, scheduledFor}], createdAt }
+   Rows are mapped snake_case ↔ camelCase by rvFromRow so the ported mutations
+   below read exactly like the Retrace originals — the ONLY change is that the
+   prototype's localStorage save() became a Supabase update on the one row.
+   ================================================================================ */
+
+const RV_INTERVAL_PRESETS = {
+  easy:   [2, 6, 14, 30, 60, 120],
+  medium: [1, 3, 7, 14, 30, 60],
+  hard:   [1, 2, 4, 7, 14, 28],
+};
+const RV_DIFF_LABEL = { easy: 'EASY', medium: 'MED', hard: 'HARD' };
+/* Subject colors: purely cosmetic, assigned client-side, deterministically.
+   Known stream subjects reuse the app's SUBJECT_COLORS map; anything else
+   hashes into a fixed palette indexed by the subject name — same approach
+   Retrace used, and one less thing to sync (no `subjects` table). */
+const RV_SUBJECT_PALETTE = ['#47728F', '#578849', '#B07C24', '#8A5C7E', '#3E7C7B', '#9A6B15', '#7C4F70', '#5B8A71'];
+
+let reviseTopics = [];                 // all of this user's topics (camelCase cache)
+let reviseLoaded = false;
+let reviseActiveView = 'today';        // 'today' | 'calendar' | 'library'
+let reviseCalMonth = null;             // { y, m } — month shown in calendar view
+let reviseSelDate = null;              // selected day in calendar view
+let reviseEditingTopicId = null;       // null → the topic sheet is in "log" mode
+let reviseDraftIntervals = [];         // interval chips staged in the topic sheet
+let reviseFilters = { q: '', subject: 'all', status: 'all', sort: 'due' };
+let rvBusy = false;                    // guards against double-tap races on mutations
+
+/* ---------------- date + mapping helpers ---------------- */
+
+const rvAddDays = (dateStr, days) =>
+  new Date(new Date(`${dateStr}T00:00:00Z`).getTime() + days * DAY_MS).toISOString().slice(0, 10);
+const rvDiffDays = (a, b) =>
+  Math.round((new Date(`${a}T00:00:00Z`) - new Date(`${b}T00:00:00Z`)) / DAY_MS);
+
+/** due date for a topic state: anchor (last revision, or first-studied date) +
+    intervals[stage] days; null once stage reaches the end (= mastered). */
+function rvComputeDue(stage, lastRevised, initialDate, intervals) {
+  if (stage >= intervals.length) return null;
+  return rvAddDays(lastRevised || initialDate, intervals[stage]);
+}
+
+function rvFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    subject: row.subject,
+    difficulty: row.difficulty,
+    intervals: Array.isArray(row.intervals) ? row.intervals : [],
+    stage: row.stage || 0,
+    initialDate: row.initial_date,
+    dueDate: row.due_date,
+    lastRevised: row.last_revised,
+    history: Array.isArray(row.history) ? row.history : [],
+    createdAt: row.created_at,
+  };
+}
+
+function rvSubjectColor(subject) {
+  if (SUBJECT_COLORS[subject]) return SUBJECT_COLORS[subject];
+  let h = 0;
+  for (let i = 0; i < subject.length; i++) h = (h + subject.charCodeAt(i) * 31) % 100000;
+  return RV_SUBJECT_PALETTE[h % RV_SUBJECT_PALETTE.length];
+}
+
+function rvDueLabel(t) {
+  if (t.dueDate == null) return 'mastered';
+  const today = sltDate();
+  if (t.dueDate === today) return 'due today';
+  const d = rvDiffDays(t.dueDate, today);
+  return d < 0 ? `${-d}d late` : `in ${d}d`;
+}
+
+const rvGet = id => reviseTopics.find(t => t.id === id);
+
+/** Supabase update scoped to the row AND the user (RLS also enforces this). */
+function rvUpdate(id, patch) {
+  return db.from('revision_topics').update(patch).eq('id', id).eq('user_id', me.telegram_id);
+}
+
+/* ---------------- data load ---------------- */
+
+async function loadRevisionTopics() {
+  try {
+    const { data, error } = await db.from('revision_topics')
+      .select('*').eq('user_id', me.telegram_id)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    reviseTopics = (data || []).map(rvFromRow);
+    reviseLoaded = true;
+    renderReviseAll();
+  } catch (err) {
+    // Never let a Revise failure take the whole boot down (e.g. if the
+    // migration hasn't run yet) — degrade to an inline error state.
+    console.error('loadRevisionTopics failed', err);
+    reviseTopics = [];
+    ['rv-overdue-list', 'rv-due-list', 'rv-done-list', 'rv-library-list'].forEach(id => {
+      const el = $(id);
+      if (el) el.innerHTML = '<div class="log-empty">Could not load revision topics — check your connection and reload.</div>';
+    });
+    toast('Could not load revision topics 😕');
+  }
+}
+
+/* ---------------- core mutations (ported 1:1 from Retrace) ----------------
+   actComplete / actUndoComplete / actDelay / actReset / actDelete. Each one
+   writes the new state to Supabase, then write-throughs to the local cache
+   and re-renders — no localStorage anywhere anymore. */
+
+async function rvMutate(fn) {
+  if (rvBusy) return;
+  rvBusy = true;
+  try {
+    await fn();
+  } catch (err) {
+    console.error('revision mutation failed', err);
+    toast('Something went wrong 😕');
+    await loadRevisionTopics(); // resync the cache with the server state
+  } finally {
+    rvBusy = false;
+  }
+}
+
+/** Retrace actComplete: push a history entry for the current stage, set
+    lastRevised = today, stage++, recompute dueDate from intervals[stage]
+    (null once stage reaches the end = mastered). */
+function rvActComplete(id) {
+  return rvMutate(async () => {
+    const t = rvGet(id);
+    if (!t) return;
+    const today = sltDate();
+    const history = [...t.history, { date: today, at: new Date().toISOString(), stage: t.stage, scheduledFor: t.dueDate }];
+    const stage = t.stage + 1;
+    const due_date = rvComputeDue(stage, today, t.initialDate, t.intervals);
+    const { error } = await rvUpdate(id, { history, stage, last_revised: today, due_date });
+    if (error) throw error;
+    Object.assign(t, { history, stage, lastRevised: today, dueDate: due_date });
+    toast(due_date == null ? `🎉 "${t.name}" mastered!` : `Revised — next due ${rvDueLabel(t)}`);
+    renderReviseAll();
+  });
+}
+
+/** Retrace actUndoComplete: remove the last history entry, roll stage back to
+    that entry's stage, recompute lastRevised from the remaining history and
+    restore dueDate from the same anchor the schedule originally used. */
+function rvActUndoComplete(id) {
+  return rvMutate(async () => {
+    const t = rvGet(id);
+    if (!t || !t.history.length) return;
+    const last = t.history[t.history.length - 1];
+    const history = t.history.slice(0, -1);
+    const stage = last.stage;
+    const lastRevised = history.length ? history[history.length - 1].date : null;
+    const due_date = rvComputeDue(stage, lastRevised, t.initialDate, t.intervals);
+    const { error } = await rvUpdate(id, { history, stage, last_revised: lastRevised, due_date });
+    if (error) throw error;
+    Object.assign(t, { history, stage, lastRevised, dueDate: due_date });
+    toast('Revision undone ↩️');
+    renderReviseAll();
+  });
+}
+
+/** Retrace actDelay: push dueDate forward by `days` (default 1). */
+function rvActDelay(id, days = 1) {
+  return rvMutate(async () => {
+    const t = rvGet(id);
+    if (!t || t.dueDate == null) return;
+    const due_date = rvAddDays(t.dueDate, days);
+    const { error } = await rvUpdate(id, { due_date });
+    if (error) throw error;
+    t.dueDate = due_date;
+    toast(`Pushed — now due ${rvDueLabel(t)}`);
+    renderReviseAll();
+  });
+}
+
+/** Retrace actReset: stage = 0, dueDate = today + intervals[0]. History (and
+    lastRevised) stay untouched — the schedule restarts, the record doesn't. */
+function rvActReset(id) {
+  return rvMutate(async () => {
+    const t = rvGet(id);
+    if (!t) return;
+    const due_date = rvAddDays(sltDate(), t.intervals[0]);
+    const { error } = await rvUpdate(id, { stage: 0, due_date });
+    if (error) throw error;
+    t.stage = 0;
+    t.dueDate = due_date;
+    toast(`Schedule restarted — next due ${rvDueLabel(t)}`);
+    renderReviseAll();
+  });
+}
+
+/** Retrace actDelete: remove the topic entirely. */
+async function rvDeleteTopic(id) {
+  const t = rvGet(id);
+  const { error } = await db.from('revision_topics').delete().eq('id', id).eq('user_id', me.telegram_id);
+  if (error) { toast('Delete failed 😕'); return; }
+  reviseTopics = reviseTopics.filter(x => x.id !== id);
+  toast(`"${t?.name || 'Topic'}" deleted 🗑️`);
+  closeTopicSheet(); // no-op when the sheet isn't open (closeSheet guards on hidden)
+  renderReviseAll();
+}
+
+/* ---------------- topic sheet (log / edit) ---------------- */
+
+function openTopicSheet(topic = null) {
+  reviseEditingTopicId = topic ? topic.id : null;
+
+  $('topic-sheet-title').textContent = topic ? 'Edit topic' : 'Log topic';
+  $('topic-sheet-sub').textContent = topic
+    ? `Stage ${Math.min(topic.stage, topic.intervals.length)} of ${topic.intervals.length} · ${rvDueLabel(topic)}`
+    : 'Spaced-repetition schedule';
+
+  $('topic-name').value = topic ? topic.name : '';
+  $('topic-subject').value = topic ? topic.subject : '';
+  const diff = topic ? topic.difficulty : 'medium';
+  $('topic-difficulty-toggle').querySelectorAll('.chip').forEach(b => b.classList.toggle('active', b.dataset.diff === diff));
+  reviseDraftIntervals = topic ? [...topic.intervals] : [...RV_INTERVAL_PRESETS[diff]];
+  $('topic-initial-date').value = topic ? topic.initialDate : sltDate();
+
+  // Free-text subject input, with the user's existing subjects + stream
+  // subjects offered as suggestions (datalist — typing anything else is fine).
+  $('rv-subject-list').innerHTML = [...new Set([...reviseTopics.map(t => t.subject), ...STREAM_SUBJECTS[settings.stream]])]
+    .sort((a, b) => a.localeCompare(b))
+    .map(s => `<option value="${escapeHtml(s)}">`).join('');
+
+  const del = $('topic-delete');
+  del.hidden = !topic;
+  delete del.dataset.armed;
+  del.textContent = 'Delete';
+
+  renderIntervalChips();
+  openSheet('topic-sheet');
+}
+
+function closeTopicSheet() {
+  closeSheet('topic-sheet');
+  const del = $('topic-delete');
+  delete del.dataset.armed;
+  del.textContent = 'Delete';
+}
+
+function renderIntervalChips() {
+  $('topic-interval-chips').innerHTML = reviseDraftIntervals.length
+    ? reviseDraftIntervals.map((d, i) =>
+        `<span class="tag-chip">${d}d<button type="button" class="tag-chip-x" data-i="${i}" aria-label="Remove the ${d}-day interval">×</button></span>`).join('')
+    : '<span class="rv-int-empty">No intervals yet — add one below or tap a difficulty preset.</span>';
+}
+
+function addIntervalChip() {
+  const input = $('topic-interval-new');
+  const n = parseInt(input.value, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 365) { toast('Interval must be 1–365 days'); return; }
+  reviseDraftIntervals = [...new Set([...reviseDraftIntervals, n])].sort((a, b) => a - b);
+  input.value = '';
+  renderIntervalChips();
+}
+
+async function saveTopicEntry() {
+  const name = $('topic-name').value.trim();
+  const subject = $('topic-subject').value.trim();
+  const difficulty = $('topic-difficulty-toggle').querySelector('.chip.active')?.dataset.diff || 'medium';
+  const intervals = [...reviseDraftIntervals];
+  const initialDate = $('topic-initial-date').value || sltDate();
+
+  if (!name) { toast('Give the topic a name'); return; }
+  if (!subject) { toast('Add a subject'); return; }
+  if (!intervals.length) { toast('Add at least one review interval'); return; }
+  if (intervals.some(n => !Number.isInteger(n) || n < 1 || n > 365)) { toast('Intervals must be 1–365 days'); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(initialDate)) { toast('Pick a valid first-studied date'); return; }
+
+  const btn = $('topic-save');
+  setBtnLoading(btn, true, 'Saving…');
+  try {
+    if (reviseEditingTopicId) {
+      const t = rvGet(reviseEditingTopicId);
+      if (!t) { toast('Topic not found 😕'); return; }
+      // Editing re-derives the schedule from the topic's own anchor
+      // (last revision, or the first-studied date) with the new parameters.
+      const due_date = rvComputeDue(t.stage, t.lastRevised, initialDate, intervals);
+      const patch = { name, subject, difficulty, intervals, initial_date: initialDate, due_date };
+      const { error } = await rvUpdate(t.id, patch);
+      if (error) throw error;
+      Object.assign(t, { name, subject, difficulty, intervals: [...intervals], initialDate, dueDate: due_date });
+      toast('Topic updated ✅');
+    } else {
+      // Creating a topic (Retrace): stage 0, history [], dueDate = initialDate + intervals[0]
+      const { data, error } = await db.from('revision_topics').insert({
+        user_id: me.telegram_id,
+        name,
+        subject,
+        difficulty,
+        intervals,
+        stage: 0,
+        initial_date: initialDate,
+        due_date: rvComputeDue(0, null, initialDate, intervals),
+        last_revised: null,
+        history: [],
+      }).select().single();
+      if (error) throw error;
+      const fresh = rvFromRow(data);
+      reviseTopics.push(fresh);
+      toast(`Topic added — first review ${rvDueLabel(fresh)}`);
+    }
+    closeTopicSheet();
+    renderReviseAll();
+  } catch (err) {
+    console.error(err);
+    toast('Save failed 😕');
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+/* ---------------- view switching + renders ---------------- */
+
+function renderReviseAll() {
+  const n = reviseTopics.length;
+  const label = $('rv-count-label');
+  if (label) label.textContent = n ? `· ${n} topic${n === 1 ? '' : 's'}` : '';
+  renderReviseStats();
+  if (reviseActiveView === 'calendar') renderReviseCalendar();
+  else if (reviseActiveView === 'library') renderReviseLibrary();
+  else renderReviseToday();
+}
+
+function switchReviseView(view) {
+  reviseActiveView = view;
+  $('revise-view-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x.dataset.view === view));
+  $('rv-view-today').hidden = view !== 'today';
+  $('rv-view-calendar').hidden = view !== 'calendar';
+  $('rv-view-library').hidden = view !== 'library';
+  renderReviseAll();
+}
+
+function renderReviseStats() {
+  const today = sltDate();
+  const active = reviseTopics.filter(t => t.dueDate != null);
+  $('rv-stat-due').textContent = active.filter(t => t.dueDate === today).length;
+  $('rv-stat-overdue').textContent = active.filter(t => t.dueDate < today).length;
+  $('rv-stat-done').textContent = reviseTopics.filter(t => t.history.some(h => h.date === today)).length;
+  $('rv-stat-mastered').textContent = reviseTopics.filter(t => t.dueDate == null).length;
+}
+
+/* ---------------- row markup (shared by Today / Library / day detail) ---------------- */
+
+const RV_ICONS = {
+  check: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  undo: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+  edit: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  reset: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/></svg>',
+  del: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
+};
+
+/** One topic row. ctx: 'overdue' | 'due' | 'done' | 'library' | 'cal-due' | 'cal-done'.
+    Action buttons reuse .mh-btn (same 44px invisible tap targets + press feedback
+    as the marks history); destructive ones get the two-tap confirm via rvArmAction. */
+function rvRowHtml(t, ctx) {
+  const today = sltDate();
+  const color = rvSubjectColor(t.subject);
+  const done = ctx === 'done' || ctx === 'cal-done';
+  const late = t.dueDate != null && t.dueDate < today;
+
+  const actions = [];
+  if (ctx === 'overdue' || ctx === 'due' || (ctx === 'cal-due' && reviseSelDate === today)) {
+    actions.push(`<button class="mh-btn" data-action="complete" aria-label="Mark revised" title="Mark revised">${RV_ICONS.check}</button>`);
+    actions.push(`<button class="mh-btn" data-action="delay" aria-label="Delay one day" title="Delay one day"><span class="rv-btn-txt">+1d</span></button>`);
+  }
+  if (ctx === 'done' || ctx === 'cal-done') {
+    const last = t.history[t.history.length - 1];
+    if (last && last.date === today && (ctx === 'done' || reviseSelDate === today)) {
+      actions.push(`<button class="mh-btn" data-action="undo" aria-label="Undo revision" title="Undo revision">${RV_ICONS.undo}</button>`);
+    }
+  }
+  if (ctx === 'library') {
+    actions.push(`<button class="mh-btn" data-action="edit" aria-label="Edit topic" title="Edit">${RV_ICONS.edit}</button>`);
+    actions.push(`<button class="mh-btn" data-action="reset" aria-label="Reset schedule" title="Reset schedule">${RV_ICONS.reset}</button>`);
+    actions.push(`<button class="mh-btn mh-del" data-action="delete" aria-label="Delete topic" title="Delete">${RV_ICONS.del}</button>`);
+  }
+
+  const meta = [
+    `<span class="rv-subject" style="color:${color}">${escapeHtml(t.subject)}</span>`,
+    `<span class="rv-diff rv-diff-${t.difficulty}">${RV_DIFF_LABEL[t.difficulty] || 'MED'}</span>`,
+    `<span>stage ${Math.min(t.stage, t.intervals.length)}/${t.intervals.length}</span>`,
+    `<span class="rv-due-note${late ? ' is-late' : ''}${t.dueDate == null ? ' is-done' : ''}">${rvDueLabel(t)}</span>`,
+  ];
+
+  return `<div class="rv-row${done ? ' is-done' : ''}${t.dueDate == null ? ' is-mastered' : ''}" data-topic-id="${t.id}" data-openable="1">
+    <span class="rv-dot" style="background:${color}"></span>
+    <div class="rv-info">
+      <span class="rv-name">${escapeHtml(t.name)}</span>
+      <span class="rv-meta">${meta.join('<span class="rv-sep">·</span>')}</span>
+    </div>
+    ${actions.length ? `<div class="rv-actions">${actions.join('')}</div>` : ''}
+  </div>`;
+}
+
+/* ---------------- Today view ---------------- */
+
+function renderReviseToday() {
+  const today = sltDate();
+  const active = reviseTopics.filter(t => t.dueDate != null);
+  const overdue = active.filter(t => t.dueDate < today)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.name.localeCompare(b.name));
+  const dueToday = active.filter(t => t.dueDate === today)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const doneToday = reviseTopics
+    .filter(t => t.history.length && t.history[t.history.length - 1].date === today)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const fill = (group, list, count, rows, ctx) => {
+    group.hidden = !rows.length;
+    count.textContent = rows.length || '';
+    list.innerHTML = rows.map(t => rvRowHtml(t, ctx)).join('');
+    staggerItems(list, '.rv-row');
+  };
+  fill($('rv-group-overdue'), $('rv-overdue-list'), $('rv-count-overdue'), overdue, 'overdue');
+  fill($('rv-group-due'), $('rv-due-list'), $('rv-count-due'), dueToday, 'due');
+  fill($('rv-group-done'), $('rv-done-list'), $('rv-count-done'), doneToday, 'done');
+
+  const empty = $('rv-today-empty');
+  if (!reviseTopics.length) {
+    empty.hidden = false;
+    empty.innerHTML = 'No revision topics yet — log your first topic to start a spaced-repetition schedule.<br><button class="ghost-btn rv-empty-btn" data-action="new">+ Log your first topic</button>';
+  } else if (!overdue.length && !dueToday.length && !doneToday.length) {
+    empty.hidden = false;
+    empty.innerHTML = 'Nothing due today — right on schedule 🎉<br><small class="muted-sm">Upcoming reviews live in the Library view.</small>';
+  } else {
+    empty.hidden = true;
+    empty.innerHTML = '';
+  }
+}
+
+/* ---------------- Calendar view ---------------- */
+
+function rvShiftMonth(delta) {
+  if (!reviseCalMonth) return;
+  let { y, m } = reviseCalMonth;
+  m += delta;
+  if (m < 1) { m = 12; y--; }
+  if (m > 12) { m = 1; y++; }
+  reviseCalMonth = { y, m };
+  renderReviseCalendar();
+}
+
+function renderReviseCalendar() {
+  if (!reviseCalMonth) {
+    const [y, m] = sltDate().split('-').map(Number);
+    reviseCalMonth = { y, m };
+    reviseSelDate = sltDate();
+  }
+  const { y, m } = reviseCalMonth;
+  const today = sltDate();
+  $('rv-cal-title').textContent = new Date(Date.UTC(y, m - 1, 1))
+    .toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+  // One pass over history + due dates → per-day marker counts.
+  const doneByDate = new Map(), dueByDate = new Map();
+  for (const t of reviseTopics) {
+    for (const h of t.history) doneByDate.set(h.date, (doneByDate.get(h.date) || 0) + 1);
+    if (t.dueDate != null) dueByDate.set(t.dueDate, (dueByDate.get(t.dueDate) || 0) + 1);
+  }
+
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7; // Monday-first, like the app's day list
+
+  let html = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    .map(d => `<div class="rv-cal-dow">${d}</div>`).join('');
+  for (let i = 0; i < firstDow; i++) html += '<div class="rv-cal-cell is-blank"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const revised = doneByDate.get(dateStr) || 0;
+    const due = dueByDate.get(dateStr) || 0;
+    const dueNow = due && dateStr <= today ? due : 0;   // due today or overdue
+    const projected = due && dateStr > today ? due : 0; // scheduled in the future
+    const dots = [
+      revised ? '<i class="rv-cal-dot d-done"></i>' : '',
+      dueNow ? '<i class="rv-cal-dot d-due"></i>' : '',
+      projected ? '<i class="rv-cal-dot d-proj"></i>' : '',
+    ].join('');
+    const tip = [
+      revised ? `${revised} revised` : '',
+      dueNow ? `${dueNow} due` : '',
+      projected ? `${projected} scheduled` : '',
+    ].filter(Boolean).join(' · ');
+    html += `<button type="button" class="rv-cal-cell${dateStr === today ? ' is-today' : ''}${dateStr === reviseSelDate ? ' is-sel' : ''}${(revised || due) ? ' has-items' : ''}" data-date="${dateStr}"${tip ? ` title="${tip}"` : ''}>
+      <span class="rv-cal-day">${d}</span>
+      ${dots ? `<span class="rv-cal-dots">${dots}</span>` : ''}
+    </button>`;
+  }
+  $('rv-cal-grid').innerHTML = html;
+
+  renderReviseDayDetail();
+}
+
+function renderReviseDayDetail() {
+  const wrap = $('rv-day-detail');
+  if (!reviseSelDate) { wrap.innerHTML = ''; return; }
+  const today = sltDate();
+  const when = reviseSelDate === today ? 'today' : `on ${reviseSelDate}`;
+  const dueRows = reviseTopics.filter(t => t.dueDate != null && t.dueDate === reviseSelDate);
+  const doneRows = reviseTopics.filter(t => t.history.some(h => h.date === reviseSelDate));
+
+  const parts = [];
+  if (dueRows.length) parts.push(`<div class="section-label">Due ${when}</div><div class="rv-list">${dueRows.map(t => rvRowHtml(t, 'cal-due')).join('')}</div>`);
+  if (doneRows.length) parts.push(`<div class="section-label">Revised ${when}</div><div class="rv-list">${doneRows.map(t => rvRowHtml(t, 'cal-done')).join('')}</div>`);
+  wrap.innerHTML = parts.length ? parts.join('') : `<div class="log-empty">Nothing scheduled or completed ${when}.</div>`;
+  staggerItems(wrap, '.rv-row');
+}
+
+/* ---------------- Library view ---------------- */
+
+function renderReviseLibrary() {
+  const today = sltDate();
+
+  // Subject chips are derived from the data (deterministic colors, no table).
+  const subjects = [...new Set(reviseTopics.map(t => t.subject))].sort((a, b) => a.localeCompare(b));
+  if (reviseFilters.subject !== 'all' && !subjects.includes(reviseFilters.subject)) reviseFilters.subject = 'all';
+  $('rv-subject-filter').innerHTML =
+    `<button class="chip${reviseFilters.subject === 'all' ? ' active' : ''}" data-subject="all">All</button>` +
+    subjects.map(s => `<button class="chip${reviseFilters.subject === s ? ' active' : ''}" data-subject="${escapeHtml(s)}"><i class="rv-dot rv-dot-sm" style="background:${rvSubjectColor(s)}"></i>${escapeHtml(s)}</button>`).join('');
+
+  const q = reviseFilters.q;
+  const rows = reviseTopics.filter(t =>
+    (!q || t.name.toLowerCase().includes(q) || t.subject.toLowerCase().includes(q)) &&
+    (reviseFilters.subject === 'all' || t.subject === reviseFilters.subject) &&
+    (reviseFilters.status === 'all' ||
+      (reviseFilters.status === 'due' && t.dueDate != null && t.dueDate <= today) ||
+      (reviseFilters.status === 'overdue' && t.dueDate != null && t.dueDate < today) ||
+      (reviseFilters.status === 'upcoming' && t.dueDate != null && t.dueDate > today) ||
+      (reviseFilters.status === 'mastered' && t.dueDate == null)));
+
+  const sorters = {
+    due: (a, b) => (a.dueDate || '9999-12-31').localeCompare(b.dueDate || '9999-12-31') || a.name.localeCompare(b.name),
+    name: (a, b) => a.name.localeCompare(b.name),
+    subject: (a, b) => a.subject.localeCompare(b.subject) || a.name.localeCompare(b.name),
+    revised: (a, b) => (b.lastRevised || '').localeCompare(a.lastRevised || '') || a.name.localeCompare(b.name),
+  };
+  rows.sort(sorters[reviseFilters.sort] || sorters.due);
+
+  const list = $('rv-library-list');
+  if (!reviseTopics.length) {
+    list.innerHTML = '<div class="log-empty">No revision topics yet.<br><button class="ghost-btn rv-empty-btn" data-action="new">+ Log your first topic</button></div>';
+  } else if (!rows.length) {
+    list.innerHTML = '<div class="log-empty">No topics match these filters.</div>';
+  } else {
+    list.innerHTML = rows.map(t => rvRowHtml(t, 'library')).join('');
+    staggerItems(list, '.rv-row');
+  }
+}
+
+/* ---------------- actions (delegated) + two-tap confirm ---------------- */
+
+/** Two-tap confirm for destructive row actions — same convention as the marks
+    history (reuses the .mh-armed styling; one armed button app-wide at a time). */
+function rvArmAction(btn, label) {
+  document.querySelectorAll('.mh-btn[data-armed="1"]').forEach(rvDisarmAction);
+  btn.dataset.armed = '1';
+  btn.dataset.origHtml = btn.innerHTML;
+  btn.classList.add('mh-armed');
+  btn.textContent = label;
+  setTimeout(() => { if (document.body.contains(btn)) rvDisarmAction(btn); }, 3000);
+}
+function rvDisarmAction(btn) {
+  delete btn.dataset.armed;
+  btn.classList.remove('mh-armed');
+  if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
+  delete btn.dataset.origHtml;
+}
+
+function handleReviseListClick(e) {
+  const btn = e.target.closest('[data-action]');
+  if (btn) {
+    const action = btn.dataset.action;
+    if (action === 'new') { openTopicSheet(); return; }
+    const id = btn.closest('[data-topic-id]')?.dataset.topicId;
+    if (!id) return;
+    // destructive actions get the two-tap confirm
+    if ((action === 'delete' || action === 'reset') && btn.dataset.armed !== '1') {
+      rvArmAction(btn, action === 'delete' ? 'Delete?' : 'Reset?');
+      return;
+    }
+    if (action === 'complete') rvActComplete(id);
+    else if (action === 'undo') rvActUndoComplete(id);
+    else if (action === 'delay') rvActDelay(id, 1);
+    else if (action === 'reset') rvActReset(id);
+    else if (action === 'delete') rvDeleteTopic(id);
+    else if (action === 'edit') { const t = rvGet(id); if (t) openTopicSheet(t); }
+    return;
+  }
+  // tapping anywhere else on a row opens the topic sheet (edit)
+  const row = e.target.closest('.rv-row[data-openable]');
+  if (row) {
+    const t = rvGet(row.dataset.topicId);
+    if (t) openTopicSheet(t);
+  }
+}
+
+/* ---------------- init & wiring (called once from loadApp) ---------------- */
+
+function initReviseTab() {
+  $('btn-log-topic').onclick = () => openTopicSheet();
+
+  $('revise-view-toggle').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (chip && chip.dataset.view) switchReviseView(chip.dataset.view);
+  });
+
+  // Delegated row actions for every container that renders rv-row markup.
+  ['rv-overdue-list', 'rv-due-list', 'rv-done-list', 'rv-today-empty', 'rv-day-detail', 'rv-library-list']
+    .forEach(id => $(id)?.addEventListener('click', handleReviseListClick));
+
+  // Calendar
+  $('rv-cal-prev').onclick = () => rvShiftMonth(-1);
+  $('rv-cal-next').onclick = () => rvShiftMonth(1);
+  $('rv-cal-grid').addEventListener('click', e => {
+    const cell = e.target.closest('.rv-cal-cell[data-date]');
+    if (!cell) return;
+    reviseSelDate = cell.dataset.date;
+    renderReviseCalendar();
+  });
+
+  // Library filters (search + subject + status + sort)
+  $('rv-search').addEventListener('input', () => {
+    reviseFilters.q = $('rv-search').value.trim().toLowerCase();
+    renderReviseLibrary();
+  });
+  const wireChips = (id, key) => {
+    $(id).addEventListener('click', e => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      reviseFilters[key] = chip.dataset[key];
+      $(id).querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === chip));
+      renderReviseLibrary();
+    });
+  };
+  wireChips('rv-subject-filter', 'subject');
+  wireChips('rv-status-filter', 'status');
+  wireChips('rv-sort-toggle', 'sort');
+
+  // Topic sheet
+  $('topic-close').onclick = closeTopicSheet;
+  $('topic-cancel').onclick = closeTopicSheet;
+  $('topic-sheet').addEventListener('click', e => { if (e.target === $('topic-sheet')) closeTopicSheet(); });
+  $('topic-save').onclick = saveTopicEntry;
+
+  // Difficulty presets populate the editable interval chips (Retrace behavior)
+  $('topic-difficulty-toggle').querySelectorAll('.chip').forEach(b => b.onclick = () => {
+    $('topic-difficulty-toggle').querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
+    reviseDraftIntervals = [...RV_INTERVAL_PRESETS[b.dataset.diff]];
+    renderIntervalChips();
+  });
+  $('topic-interval-add').onclick = addIntervalChip;
+  $('topic-interval-new').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); addIntervalChip(); }
+  });
+  $('topic-interval-chips').addEventListener('click', e => {
+    const x = e.target.closest('.tag-chip-x');
+    if (!x) return;
+    reviseDraftIntervals.splice(+x.dataset.i, 1);
+    renderIntervalChips();
+  });
+
+  // Two-tap confirm on the sheet's Delete button
+  $('topic-delete').onclick = () => {
+    const btn = $('topic-delete');
+    if (btn.dataset.armed === '1') {
+      delete btn.dataset.armed;
+      btn.textContent = 'Delete';
+      rvDeleteTopic(reviseEditingTopicId);
+    } else {
+      btn.dataset.armed = '1';
+      btn.textContent = 'Tap again to delete';
+      setTimeout(() => {
+        if (btn.dataset.armed === '1') { delete btn.dataset.armed; btn.textContent = 'Delete'; }
+      }, 3000);
+    }
+  };
 }
