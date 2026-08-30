@@ -15,10 +15,10 @@ const STREAM_SUBJECTS = {
   Bio:   ['Bio', 'Physics', 'Chemistry'],
 };
 const SUBJECT_COLORS = {
-  'Combined Maths': '#2AABEE',
-  'Bio':            '#3FC65A',
-  'Physics':        '#F5A623',
-  'Chemistry':      '#9B6BFF',
+  'Combined Maths': '#47728F',
+  'Bio':            '#578849',
+  'Physics':        '#B07C24',
+  'Chemistry':      '#8A5C7E',
 };
 const SETTINGS_COLUMNS = {
   'Combined Maths': 'maths_class_day', 'Bio': 'maths_class_day',
@@ -339,7 +339,7 @@ async function updateGrowthChart() {
 
 function chartColors() {
   const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  return { grid: dark ? '#22303C' : '#E3E7EC', text: dark ? '#8B98A5' : '#707579', cardBg: dark ? '#17212B' : '#FFFFFF' };
+  return { grid: dark ? '#332D23' : '#E0D8C6', text: dark ? '#988F7D' : '#8A8171', cardBg: dark ? '#1E1B16' : '#FBF8F1' };
 }
 
 function renderGrowthChart(labels, daily, cumulative) {
@@ -349,14 +349,14 @@ function renderGrowthChart(labels, daily, cumulative) {
   let dataset;
 
   if (activeChartType === 'bar') {
-    dataset = { type: 'bar', label: 'Hours / day', data: daily, backgroundColor: '#2AABEE', borderRadius: 6, maxBarThickness: 22 };
+    dataset = { type: 'bar', label: 'Hours / day', data: daily, backgroundColor: '#4A936E', borderRadius: 6, maxBarThickness: 22 };
   } else {
     const grad = ctx.createLinearGradient(0, 0, 0, 240);
-    grad.addColorStop(0, 'rgba(42,171,238,.32)'); grad.addColorStop(1, 'rgba(42,171,238,0)');
-    dataset = { type: 'line', label: 'Cumulative hours', data: cumulative, borderColor: '#2AABEE', borderWidth: 3,
+    grad.addColorStop(0, 'rgba(74,147,110,.32)'); grad.addColorStop(1, 'rgba(74,147,110,0)');
+    dataset = { type: 'line', label: 'Cumulative hours', data: cumulative, borderColor: '#4A936E', borderWidth: 3,
       backgroundColor: grad, fill: true, tension: .45, cubicInterpolationMode: 'monotone',
       pointRadius: labels.length > 40 ? 0 : 3, pointHoverRadius: 6,
-      pointBackgroundColor: '#2AABEE', pointBorderColor: c.cardBg, pointBorderWidth: 2 };
+      pointBackgroundColor: '#4A936E', pointBorderColor: c.cardBg, pointBorderWidth: 2 };
   }
 
   growthChart = new Chart(ctx, {
@@ -619,7 +619,7 @@ async function renderMarksPanel() {
     marksChart = new Chart(ctx, {
       type: 'line',
       data: { labels: chartLabels, datasets: [{ label: `${subject} marks`, data: chartData,
-        borderColor: SUBJECT_COLORS[subject] || '#2AABEE', backgroundColor: 'transparent',
+        borderColor: SUBJECT_COLORS[subject] || '#47728F', backgroundColor: 'transparent',
         tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2.5,
         pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: pointColors,
         pointBorderColor: c.cardBg, pointBorderWidth: 2 }] },
@@ -675,9 +675,9 @@ function renderCombinedMathsChart(ctx, c, scoredAsc) {
   return new Chart(ctx, {
     type: 'line',
     data: { labels, datasets: [
-      lineDataset('Pure Maths', pureData, '#2AABEE'),
-      lineDataset('Applied Maths', appliedData, '#9B6BFF'),
-      lineDataset('Average', avgData, '#3FC65A', true),
+      lineDataset('Pure Maths', pureData, '#47728F'),
+      lineDataset('Applied Maths', appliedData, '#8A5C7E'),
+      lineDataset('Average', avgData, '#578849', true),
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -694,11 +694,11 @@ function renderCombinedMathsChart(ctx, c, scoredAsc) {
 
 /** Canvas-safe hex for a mark value — same thresholds as gradeBandsPlugin/gradeFor. */
 function gradeHex(marks) {
-  if (marks >= 75) return '#3FC65A';
-  if (marks >= 65) return '#2AABEE';
-  if (marks >= 55) return '#F5A623';
-  if (marks >= 35) return '#F5A623';
-  return '#E5473C';
+  if (marks >= 75) return '#578849';
+  if (marks >= 65) return '#47728F';
+  if (marks >= 55) return '#B07C24';
+  if (marks >= 35) return '#B07C24';
+  return '#BC5B44';
 }
 
 /** A/L grading bands drawn behind the marks line: A 75+, B 65-74, C 55-64, S 35-54, W <35 */
@@ -708,11 +708,11 @@ const gradeBandsPlugin = {
     const { ctx, chartArea, scales: { y } } = chart;
     if (!chartArea) return;
     const bands = [
-      { from: 75, to: 100, color: 'rgba(63,198,90,.10)',  label: 'A', labelColor: '#3FC65A' },
-      { from: 65, to: 75,  color: 'rgba(42,171,238,.10)', label: 'B', labelColor: '#2AABEE' },
-      { from: 55, to: 65,  color: 'rgba(245,166,35,.12)', label: 'C', labelColor: '#F5A623' },
-      { from: 35, to: 55,  color: 'rgba(245,166,35,.06)', label: 'S', labelColor: '#F5A623' },
-      { from: 0,  to: 35,  color: 'rgba(229,71,60,.10)',  label: 'W', labelColor: '#E5473C' },
+      { from: 75, to: 100, color: 'rgba(87,136,73,.10)',  label: 'A', labelColor: '#578849' },
+      { from: 65, to: 75,  color: 'rgba(71,114,143,.10)', label: 'B', labelColor: '#47728F' },
+      { from: 55, to: 65,  color: 'rgba(176,124,36,.12)', label: 'C', labelColor: '#B07C24' },
+      { from: 35, to: 55,  color: 'rgba(176,124,36,.06)', label: 'S', labelColor: '#B07C24' },
+      { from: 0,  to: 35,  color: 'rgba(188,91,68,.10)',  label: 'W', labelColor: '#BC5B44' },
     ];
     ctx.save();
     bands.forEach(b => {
@@ -767,9 +767,9 @@ function renderAnalyzeChart(scoredAsc) {
   analyzeChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets: [
-      { label: 'Essay', ...mk(withBreakdown.map(r => r.essay_marks ?? null), '#F5A623', '29') },
-      { label: 'MCQ',   ...mk(withBreakdown.map(r => r.mcq_marks ?? null),   '#3FC65A', '29') },
-      { label: 'Total', ...mk(withBreakdown.map(r => +r.marks),              '#2AABEE', '1F') },
+      { label: 'Essay', ...mk(withBreakdown.map(r => r.essay_marks ?? null), '#B07C24', '29') },
+      { label: 'MCQ',   ...mk(withBreakdown.map(r => r.mcq_marks ?? null),   '#578849', '29') },
+      { label: 'Total', ...mk(withBreakdown.map(r => +r.marks),              '#47728F', '1F') },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -1230,7 +1230,7 @@ function renderMiniChart(year, attempts) {
     type: 'line',
     data: { labels: scored.map(a => `R${a.round_number}`), datasets: [{
       data: scored.map(a => +a.marks),
-      borderColor: SUBJECT_COLORS[activePaperSubject] || '#2AABEE', backgroundColor: 'transparent',
+      borderColor: SUBJECT_COLORS[activePaperSubject] || '#47728F', backgroundColor: 'transparent',
       tension: .42, cubicInterpolationMode: 'monotone', borderWidth: 2.5,
       pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: scored.map(a => gradeHex(+a.marks)),
       pointBorderColor: c.cardBg, pointBorderWidth: 2,
