@@ -1011,3 +1011,145 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .seg { padding: 11px 4px 12px; font-size: .8rem; }
   .sheet { padding-left: 16px; padding-right: 16px; }
 }
+
+/* ======================================================================
+   REVISE TAB (Retrace port) — spaced repetition
+   Everything reuses the existing tokens (--paper/--card/--line/--accent…),
+   the .mh-btn action buttons, .chip-toggle filters, .tag-chip chips and
+   .log-empty states — so both themes adapt automatically.
+   ====================================================================== */
+
+/* ---------- Summary strip group labels + topic rows ---------- */
+.rv-group { margin-bottom: 6px; }
+.rv-group-label { display: flex; align-items: center; gap: 8px; }
+.rv-group-count {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  color: var(--accent); background: var(--accent-soft);
+  border-radius: 999px; padding: 2px 8px;
+}
+.rv-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+
+.rv-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 11px 12px;
+  cursor: pointer;
+  animation: listItemIn .22s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 12ms);
+  transition: border-color .15s ease;
+}
+.rv-row:hover { border-color: var(--faint); }
+.rv-row:active { transform: scale(.985); }
+.rv-row.is-done { opacity: .78; }
+.rv-row.is-done .rv-name {
+  text-decoration: line-through; text-decoration-color: var(--faint);
+  text-decoration-thickness: 1.5px;
+}
+.rv-row.is-mastered .rv-name { color: var(--moss); }
+
+.rv-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.rv-dot-sm { width: 7px; height: 7px; display: inline-block; margin-right: 2px; }
+.rv-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rv-name {
+  font-weight: 600; font-size: .9rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-meta {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px;
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+}
+.rv-sep { opacity: .5; font-style: normal; }
+.rv-diff-easy { color: var(--moss); }
+.rv-diff-medium { color: var(--ochre); }
+.rv-diff-hard { color: var(--warn); }
+.rv-due-note.is-late { color: var(--warn); }
+.rv-due-note.is-done { color: var(--moss); }
+
+/* Action buttons reuse .mh-btn; the "+1d" delay button is a mono text glyph */
+.rv-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.rv-actions .mh-btn { font-family: var(--font-mono); }
+.rv-btn-txt { font-size: .6rem; font-weight: 700; letter-spacing: .05em; }
+
+/* ---------- Calendar view — heatmap-adjacent visual language ---------- */
+.rv-cal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 4px 0 12px;
+}
+.rv-cal-title { font-size: 1.05rem; font-weight: 600; margin: 0; }
+.rv-cal-nav { width: 38px; height: 38px; }
+.rv-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.rv-cal-dow {
+  text-align: center; font-family: var(--font-mono); font-size: 8px; font-weight: 600;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--faint);
+  padding: 2px 0 4px;
+}
+.rv-cal-cell {
+  min-height: 42px; padding: 5px 6px; text-align: left;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 3px;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.rv-cal-cell.is-blank { background: transparent; border-color: transparent; pointer-events: none; }
+.rv-cal-cell.has-items { cursor: pointer; }
+.rv-cal-cell.has-items:hover { border-color: var(--faint); }
+.rv-cal-cell.has-items:active { transform: scale(.96); }
+.rv-cal-cell.is-today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.rv-cal-cell.is-sel { background: var(--accent-soft); border-color: var(--accent); }
+.rv-cal-day {
+  font-family: var(--font-mono); font-size: .68rem; font-weight: 600;
+  color: var(--faint); font-variant-numeric: tabular-nums;
+}
+.rv-cal-cell.is-today .rv-cal-day, .rv-cal-cell.is-sel .rv-cal-day { color: var(--accent); }
+.rv-cal-dots { display: flex; gap: 3px; }
+.rv-cal-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.rv-cal-dot.d-done { background: var(--moss); }
+.rv-cal-dot.d-due { background: var(--warn); }
+.rv-cal-dot.d-proj { background: transparent; border: 1.5px solid var(--accent); opacity: .8; }
+.rv-cal-legend {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 10px;
+  color: var(--faint);
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 600;
+  letter-spacing: .12em; text-transform: uppercase;
+}
+.rv-cal-legend span { display: flex; align-items: center; gap: 5px; }
+.rv-day-detail { margin-top: 14px; }
+.rv-day-detail .section-label { margin-top: 10px; }
+
+/* ---------- Library view ---------- */
+.rv-search {
+  width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 10px 12px; background: var(--paper); color: var(--ink);
+  font: inherit; min-height: 44px; margin-bottom: 12px;
+}
+.rv-search::placeholder { color: var(--faint); }
+.rv-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* ---------- Topic sheet — interval chip editor ---------- */
+.rv-field-hint { text-transform: none; letter-spacing: normal; opacity: .7; font-weight: 500; }
+.rv-int-chips { min-height: 28px; }
+.rv-int-add { display: flex; gap: 6px; margin-top: 8px; }
+.rv-int-add input {
+  width: 96px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 8px 10px; background: var(--card); color: var(--ink); text-align: center;
+  font-family: var(--font-mono); font-size: .9rem; font-weight: 500; min-height: 40px;
+}
+.rv-int-add input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.rv-int-add-btn {
+  width: 40px; min-height: 40px; border-radius: var(--r-sm);
+  border: 1px dashed var(--line); background: none; color: var(--faint);
+  font-size: 1.1rem; font-weight: 600;
+}
+.rv-int-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+.rv-int-empty {
+  font-family: var(--font-body); font-size: .8rem; color: var(--faint);
+  text-transform: none; letter-spacing: 0; font-weight: 500;
+}
+.rv-empty-btn { margin-top: 12px; }
+
+/* ---------- Compact phones ---------- */
+@media (max-width: 380px) {
+  .rv-cal-cell { min-height: 36px; padding: 4px; }
+  .rv-row { padding: 10px; }
+  .rv-actions .mh-btn { width: 28px; height: 28px; }
+}
