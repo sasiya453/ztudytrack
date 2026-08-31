@@ -72,6 +72,15 @@
           data-auth-url="https://studydash.sazindux.workers.dev/api/telegram-auth"
           data-request-access="write"></script>
       </div>
+      <!-- Desktop fallback: the oauth.telegram.org popup above is unreliable on
+           browsers that aren't signed into Telegram Web (its phone-verification
+           screen often never delivers a code). This plain deep link just opens
+           Telegram itself — Telegram's own session is the identity proof. The
+           bot replies with a one-tap "Continue in Browser" link that lands back
+           here as #auth=<jwt>, which bootApp() already picks up. No JS needed. -->
+      <a class="btn-telegram-alt" href="https://t.me/Ztudytrackbot?start=login" target="_blank" rel="noopener">
+        Log in via Telegram Bot
+      </a>
       <p class="login-foot">Hours · Marks · Rounds</p>
     </div>
   </div>
