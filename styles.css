@@ -1153,3 +1153,25 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .rv-row { padding: 10px; }
   .rv-actions .mh-btn { width: 28px; height: 28px; }
 }
+
+/* ---------- Login: bot deep-link fallback ----------
+   Quiet secondary option under the Telegram Login Widget popup — reads as
+   "having trouble? try this instead", deliberately NOT a second primary
+   action: no fill, no glow, ghost-button styling at a smaller size.
+   Purely additive: carries its own transition/active rules so the shared
+   interactive-element selectors above stay untouched. */
+.btn-telegram-alt {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-top: 14px; padding: 9px 18px; min-height: 40px;
+  background: none; border: 1px solid var(--line); border-radius: 12px;
+  color: var(--faint); font-weight: 600; font-size: .84rem;
+  text-decoration: none; letter-spacing: .01em;
+  transition: transform .15s var(--ease-press), color .15s ease,
+              border-color .15s ease, background-color .15s ease;
+}
+.btn-telegram-alt:hover {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+.btn-telegram-alt:active {
+  transform: scale(.96); transition: transform .15s var(--ease-press);
+}
